@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import * as api from "./api/rated.js";
 
 const TMDB_IMG = "https://image.tmdb.org/t/p";
 
@@ -680,13 +681,56 @@ export default function RatedApp() {
   const [rankMovie,setRankMovie]=useState(null);
   const [rankedIds,setRankedIds]=useState([]);
   const [eloScores,setEloScores]=useState({});
+  const [backendUser,setBackendUser]=useState(null);
+  const [backendConnected,setBackendConnected]=useState(false);
+  const seeded=useRef(false);
+
+  // Check backend health and seed movies on mount
+  useEffect(()=>{
+    if(seeded.current) return;
+    seeded.current=true;
+    (async()=>{
+      const health=await api.healthCheck();
+      if(!health){console.warn("Backend not available, running in offline mode");return;}
+      setBackendConnected(true);
+      console.log("Backend connected:",health);
+      // Seed movies from catalog into backend
+      for(const m of MOVIE_CATALOG){
+        await api.seedMovie({movie_id:m.id,title:m.title,genre:m.genres?.[0]?.name||null,poster_url:m.poster_url||null,year:m.release_year||null});
+      }
+      console.log("Seeded",MOVIE_CATALOG.length,"movies to backend");
+    })();
+  },[]);
 
   const onNav=useCallback((s)=>{setScreen(s);setSelectedMovie(null);setRankMovie(null);},[]);
   const onSelectMovie=useCallback((m)=>{setSelectedMovie(m);setScreen("detail");},[]);
   const onBackToHome=useCallback(()=>{setScreen("home");setSelectedMovie(null);},[]);
-  const onLogin=useCallback(()=>setLoggedIn(true),[]);
+
+  const onLogin=useCallback(async()=>{
+    if(backendConnected){
+      const result=await api.login("demo_sub|DemoUser|demo@rated.app");
+      if(result){
+        setBackendUser(result.user);
+        console.log("Logged in as:",result.user);
+      }
+    }
+    setLoggedIn(true);
+  },[backendConnected]);
+
   const onRank=useCallback((m)=>{setRankMovie(m);setScreen("rank");},[]);
-  const onRankComplete=useCallback((updatedElo,newIds)=>{setEloScores(updatedElo);setRankedIds(newIds);setRankMovie(null);setScreen("profile");},[]);
+
+  const onRankComplete=useCallback(async(updatedElo,newIds)=>{
+    setEloScores(updatedElo);setRankedIds(newIds);setRankMovie(null);setScreen("profile");
+    // Persist rankings to backend
+    if(backendConnected&&backendUser){
+      for(const id of newIds){
+        const score=Math.min(10,Math.max(1,Math.round(((updatedElo[id]||1500)-1200)/80)));
+        await api.addRanking(backendUser.user_id,id,score);
+      }
+      console.log("Rankings synced to backend");
+    }
+  },[backendConnected,backendUser]);
+
   const onRankCancel=useCallback(()=>{setRankMovie(null);setScreen(selectedMovie?"detail":"home");},[selectedMovie]);
 
   const currentScreen=loggedIn?screen:"login";
@@ -729,6 +773,10 @@ export default function RatedApp() {
       </div>
       <div style={{ maxWidth:500,margin:"16px auto 0",textAlign:"center" }}>
         <p style={{ fontSize:9,color:W.dim,fontFamily:"monospace",lineHeight:1.6 }}>Apple ID & Google only · No passwords · Import watch history from 8 platforms</p>
+        <p style={{ fontSize:9,fontFamily:"monospace",marginTop:6,color:backendConnected?W.green:W.dim }}>
+          {backendConnected?"● Backend connected (localhost:8000)":"○ Backend offline — running with local data"}
+          {backendUser&&` · Logged in as ${backendUser.name}`}
+        </p>
       </div>
     </div>
   );

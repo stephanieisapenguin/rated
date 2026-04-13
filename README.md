@@ -1,16 +1,65 @@
-# React + Vite
+# Rated
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Movie ranking app — React frontend + FastAPI backend.
 
-Currently, two official plugins are available:
+## Quick Start
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+# 1. Start the backend
+cd backend
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --port 8000
 
-## React Compiler
+# 2. Start the frontend (separate terminal)
+cd frontend
+npm install
+npm run dev
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Frontend runs at `http://localhost:5173` (or next available port).
+Backend API docs at `http://localhost:8000/docs`.
 
-## Expanding the ESLint configuration
+The Vite dev server proxies `/api/*` to the backend automatically.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Running Tests
+
+```bash
+# Backend
+cd backend
+source .venv/bin/activate
+pytest tests/ -v
+
+# Frontend
+cd frontend
+npm run lint
+```
+
+## Production Build
+
+```bash
+cd frontend
+npm run build     # outputs to dist/
+npm run preview   # preview the build locally
+```
+
+## Deploy with Docker Compose
+
+```bash
+cd backend
+docker compose up --build
+```
+
+This starts the API on port 8000 and a Redis instance on 6379.
+To serve the frontend, deploy the `dist/` folder to any static host (Netlify, Vercel, Cloudflare Pages, S3+CloudFront, etc.) and point it at your API URL.
+
+## Environment Variables
+
+| Variable | Where | Purpose |
+|----------|-------|---------|
+| `VITE_TMDB_API_KEY` | Frontend `.env` | TMDB API key for live movie data (optional — app works with built-in catalog) |
+| `REDIS_URL` | Backend (Docker) | Redis connection string (set automatically by Docker Compose) |
+
+## PR Preview Deployments
+
+Pull requests automatically get a preview deployment via GitHub Actions + GitHub Pages. The workflow builds the frontend and deploys it to a unique URL posted as a PR comment. See `.github/workflows/preview.yml`.
