@@ -161,10 +161,56 @@ See `backend/README.md` for the full list. Most-used:
 |-----------------|-----------------------------------------|
 | `make install`  | Create `.venv`, install requirements    |
 | `make dev`      | `uvicorn api:app --reload` on :8000     |
+| `make run`      | `uvicorn api:app` (no reload — for production) |
 | `make test`     | `pytest -q`                             |
 | `make lint`     | `ruff check .`                          |
 | `make format`   | `ruff --fix` + `black`                  |
+| `make db-shell` | Open `sqlite3` REPL on `rated.db`       |
+| `make db-reset` | `rm rated.db` (next start re-seeds)     |
 | `make clean`    | Remove venv + caches                    |
+
+### Production build
+
+Frontend (Vite produces a static bundle for Netlify):
+
+```bash
+cd rated-integration-research-main
+npm install              # if not already installed
+npm run build            # writes to dist/
+npm run preview          # optional: serve dist/ at :4173 to sanity-check
+```
+
+Build output (current):
+
+```
+dist/index.html                   0.47 kB │ gzip:   0.30 kB
+dist/assets/index-*.css           0.23 kB │ gzip:   0.18 kB
+dist/assets/index-*.js          427.00 kB │ gzip: 112.31 kB
+✓ built in ~800 ms
+```
+
+Netlify reads `netlify.toml` and runs the same `npm run build` automatically;
+manual build is only for local sanity-checking before pushing.
+
+Backend (no build step — Python is interpreted; `make install` *is* the build):
+
+```bash
+cd rated-integration-research-main/backend
+make install             # creates .venv, installs from requirements.txt
+make run                 # uvicorn api:app on :8000 (production mode)
+make test                # 26 pytest cases — gate before deploying
+```
+
+For Render / Railway / Fly, the equivalent commands go in their dashboard:
+
+```
+Build command:  pip install -r requirements.txt
+Start command:  uvicorn api:app --host 0.0.0.0 --port $PORT
+```
+
+CI runs both halves (`.github/workflows/ci.yml`) on every push to `main` and
+every PR — so a green check on GitHub means both `npm run build` and
+`pytest -q` succeeded on a clean Linux runner.
 
 ## Environment variables
 
