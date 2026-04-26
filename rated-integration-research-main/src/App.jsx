@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // API LAYER
@@ -4658,6 +4658,18 @@ function AppInner() {
   setTypeScale(fontScale);
   const setThemeMode = useCallback((m)=>{haptic("light");setThemeModeState(m);},[]);
   const setFontScale = useCallback((s)=>{haptic("light");setFontScaleState(s);},[]);
+  // Toast state lives near the top of AppInner because callbacks below
+  // (toggleSavedMovie, follow handlers) close over showToast and would
+  // otherwise hit a TDZ error.
+  const [toast,setToast]=useState(null); // {msg, tone}
+  const toastTimeoutRef = useRef(null);
+  const showToast=useCallback((msg,tone="ok")=>{
+    setToast({msg,tone});
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    toastTimeoutRef.current = setTimeout(()=>{setToast(null);toastTimeoutRef.current=null;}, 2600);
+  },[]);
+  // Clean up pending toast timeout on unmount
+  useEffect(()=>()=>{if(toastTimeoutRef.current)clearTimeout(toastTimeoutRef.current);},[]);
   const [screen,setScreen]=useState("home");
   const [selectedMovie,setSelectedMovie]=useState(null);
   const [selectedUpcoming,setSelectedUpcoming]=useState(null);
@@ -4774,22 +4786,16 @@ function AppInner() {
     }
   },[followingHandles, userId, session, showToast]);
   const [blockedUsers,setBlockedUsers]=useState(new Set()); // Set of @handles
+  // Local-only record of reports submitted by this user. Wire up to a real
+  // /reports endpoint when moderation backend lands.
+  const [reportedItems,setReportedItems]=useState([]);
   // Users whose follow requests you've approved — they follow you (boosts your followers count)
   const [approvedFollowers,setApprovedFollowers]=useState(new Set());
   const approveFollower=useCallback((handle)=>{
     setApprovedFollowers(p=>{const n=new Set(p);n.add(handle);return n;});
   },[]);
-  const [toast,setToast]=useState(null); // {msg, tone}
-  const toastTimeoutRef = useRef(null);
   // Follow rate limit tracking — array of timestamps in last hour
   const [followTimestamps,setFollowTimestamps]=useState([]);
-  const showToast=useCallback((msg,tone="ok")=>{
-    setToast({msg,tone});
-    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
-    toastTimeoutRef.current = setTimeout(()=>{setToast(null);toastTimeoutRef.current=null;}, 2600);
-  },[]);
-  // Clean up pending toast timeout on unmount
-  useEffect(()=>()=>{if(toastTimeoutRef.current)clearTimeout(toastTimeoutRef.current);},[]);
 
   // Returns null if follow is allowed, else returns a formatted "try again in X" message
   const checkFollowLimit=useCallback(()=>{

@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel duplicate runs on the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: rated-integration-research-main
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: rated-integration-research-main/package-lock.json
+      - run: npm ci
+      # Lint is non-blocking until App.jsx is split into per-screen components
+      # (the 5,200-line monolith trips a bunch of react-hooks/static-components
+      # rules that go away naturally with the refactor).
+      - run: npm run lint --if-present || echo "lint issues — non-blocking for now"
+      - run: npm run build
+
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rated-integration-research-main/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: rated-integration-research-main/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - run: pip install pytest httpx ruff
+      - name: Lint
+        run: ruff check . || echo "ruff issues — non-blocking for now"
+      - name: Tests
+        run: pytest -q

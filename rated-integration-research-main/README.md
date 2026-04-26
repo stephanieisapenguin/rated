@@ -1,7 +1,47 @@
 # Rated
 
 Movie ranking + social app. Vite + React frontend (deployed to Netlify) talks
-to a FastAPI backend (deployed to Render/Railway/Fly).
+to a FastAPI backend (deployed to Render/Railway/Fly). SQLite locally,
+Postgres in prod via `DATABASE_URL`.
+
+## Quickstart
+
+Two terminals. Backend first, then frontend.
+
+```bash
+# Terminal 1 — backend on http://localhost:8000
+cd rated-integration-research-main/backend
+make install        # one-time: creates .venv, installs FastAPI + SQLAlchemy
+make dev            # uvicorn with --reload
+
+# Terminal 2 — frontend on http://localhost:5173
+cd rated-integration-research-main
+npm install         # one-time
+npm run dev         # Vite dev server with HMR
+```
+
+Open <http://localhost:5173>. Sign in with anything shaped `sub|name|email`
+(stub auth). Every action — rate, follow, save, review — round-trips through
+the API into `backend/rated.db` and survives restarts.
+
+Verify the round-trip:
+
+```bash
+sqlite3 rated-integration-research-main/backend/rated.db \
+  "SELECT username, COUNT(*) AS rankings FROM users LEFT JOIN rankings
+   ON users.user_id=rankings.user_id GROUP BY username;"
+
+# or use the Make shortcuts
+cd rated-integration-research-main/backend
+make db-shell       # interactive sqlite3 REPL
+make db-reset       # rm rated.db (next start re-seeds 5 movies + 8 mock users)
+make test           # 15 pytest smoke tests
+```
+
+Prereqs: Node 20+, Python 3.9+, `make`. macOS users with `nvm`:
+`nvm use 20 && which node`.
+
+## Repo layout
 
 ```
 rated-integration-research-main/
