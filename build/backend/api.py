@@ -20,7 +20,7 @@ to wipe back to seeded fixtures.
 import os
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import select, func, or_, text
@@ -84,6 +84,54 @@ def _clamp_pagination(limit: Optional[int], offset: Optional[int],
     lim = max(1, min(int(limit or default), PAGE_LIMIT_MAX))
     off = max(0, int(offset or 0))
     return lim, off
+
+
+# ─── Auth helpers ─────────────────────────────────────────────────────────────
+# Accept session_token from EITHER:
+#   Authorization: Bearer <token>     (preferred — doesn't end up in proxy
+#                                       access logs the way a query param does)
+#   ?session_token=<token>            (legacy — kept so older frontends and
+#                                       quick curl one-liners keep working)
+# Header wins if both are present.
+
+def _extract_token(authorization: Optional[str], session_token: str) -> str:
+    """Pull the bearer token out of either source. Returns "" if neither set."""
+    if authorization:
+        # Tolerate "Bearer <tok>" and bare "<tok>" — anything before the last
+        # space is the scheme; the rest is the token.
+        parts = authorization.strip().split(" ", 1)
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return parts[1].strip()
+        return authorization.strip()
+    return (session_token or "").strip()
+
+
+def require_user(
+    authorization: Optional[str] = Header(default=None),
+    session_token: str = "",
+    db: Session = Depends(get_db),
+) -> UserRow:
+    """FastAPI dependency: resolves the request to a UserRow or raises 401.
+    Use this on any endpoint that mutates state."""
+    token = _extract_token(authorization, session_token)
+    user = app_instance.auth.get_user_from_session(db, token) if token else None
+    if not user:
+        raise HTTPException(status_code=401, detail="Not logged in")
+    return user
+
+
+def require_self(
+    user_id: str,
+    authorization: Optional[str] = Header(default=None),
+    session_token: str = "",
+    db: Session = Depends(get_db),
+) -> UserRow:
+    """Like require_user, but also verifies the path's user_id matches the
+    authenticated user. Pattern for writes scoped to the caller's own data."""
+    user = require_user(authorization, session_token, db)
+    if user.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Not allowed")
+    return user
 
 
 # ─── Schema + seeding (run once on startup) ───────────────────────────────────
@@ -362,14 +410,11 @@ def check_username(username: str, db: Session = Depends(get_db)):
 @app.post("/auth/username", tags=["Auth"])
 def claim_username(
     body: UsernameClaimRequest,
-    session_token: str = "",
+    user: UserRow = Depends(require_user),
     db: Session = Depends(get_db),
 ):
     """Claim a username for the user identified by session_token.
     Returns 401 if the token is missing, unknown, or expired."""
-    user = app_instance.auth.get_user_from_session(db, session_token)
-    if not user:
-        raise HTTPException(status_code=401, detail="Not logged in")
     err = app_instance.auth.validate_username(body.username)
     if err:
         raise HTTPException(status_code=400, detail=err)
@@ -461,7 +506,12 @@ def get_user_by_username(username: str, db: Session = Depends(get_db)):
 # ─── Rankings ────────────────────────────────────────────────────────────────
 
 @app.post("/users/{user_id}/rankings", tags=["Rankings"])
-def add_ranking(user_id: str, body: RankRequest, db: Session = Depends(get_db)):
+def add_ranking(
+    user_id: str,
+    body: RankRequest,
+    _: UserRow = Depends(require_self),
+    db: Session = Depends(get_db),
+):
     try:
         ranking = app_instance.ranking_service.add_ranking(
             db, user_id, body.movie_id, body.score,
@@ -481,7 +531,12 @@ def get_user_rankings(user_id: str, limit: int = 50, offset: int = 0,
 
 
 @app.post("/users/{user_id}/pairwise", tags=["Rankings"])
-def record_pairwise(user_id: str, body: PairwiseRequest, db: Session = Depends(get_db)):
+def record_pairwise(
+    user_id: str,
+    body: PairwiseRequest,
+    _: UserRow = Depends(require_self),
+    db: Session = Depends(get_db),
+):
     row = app_instance.ranking_service.record_pairwise(
         db, user_id, body.winner_movie_id, body.loser_movie_id,
     )
@@ -496,7 +551,12 @@ def record_pairwise(user_id: str, body: PairwiseRequest, db: Session = Depends(g
 # ─── Feed ────────────────────────────────────────────────────────────────────
 
 @app.post("/users/{user_id}/follow", tags=["Feed"])
-def follow(user_id: str, body: FollowRequest, db: Session = Depends(get_db)):
+def follow(
+    user_id: str,
+    body: FollowRequest,
+    _: UserRow = Depends(require_self),
+    db: Session = Depends(get_db),
+):
     try:
         app_instance.feed_service.follow(db, user_id, body.followee_id)
         return {"ok": True}
@@ -505,7 +565,12 @@ def follow(user_id: str, body: FollowRequest, db: Session = Depends(get_db)):
 
 
 @app.delete("/users/{user_id}/follow/{followee_id}", tags=["Feed"])
-def unfollow(user_id: str, followee_id: str, db: Session = Depends(get_db)):
+def unfollow(
+    user_id: str,
+    followee_id: str,
+    _: UserRow = Depends(require_self),
+    db: Session = Depends(get_db),
+):
     app_instance.feed_service.unfollow(db, user_id, followee_id)
     return {"ok": True}
 
@@ -525,7 +590,12 @@ def get_feed(user_id: str, limit: int = 20, offset: int = 0,
 # ─── Watchlist ───────────────────────────────────────────────────────────────
 
 @app.post("/users/{user_id}/watchlist", tags=["Watchlist"])
-def add_to_watchlist(user_id: str, body: WatchlistAddRequest, db: Session = Depends(get_db)):
+def add_to_watchlist(
+    user_id: str,
+    body: WatchlistAddRequest,
+    _: UserRow = Depends(require_self),
+    db: Session = Depends(get_db),
+):
     try:
         app_instance.watchlist_service.add(db, user_id, body.movie_id, body.item_type)
         return {"ok": True, "movie_id": body.movie_id}
@@ -534,7 +604,12 @@ def add_to_watchlist(user_id: str, body: WatchlistAddRequest, db: Session = Depe
 
 
 @app.delete("/users/{user_id}/watchlist/{movie_id}", tags=["Watchlist"])
-def remove_from_watchlist(user_id: str, movie_id: str, db: Session = Depends(get_db)):
+def remove_from_watchlist(
+    user_id: str,
+    movie_id: str,
+    _: UserRow = Depends(require_self),
+    db: Session = Depends(get_db),
+):
     app_instance.watchlist_service.remove(db, user_id, movie_id)
     return {"ok": True}
 
@@ -549,7 +624,12 @@ def get_watchlist(user_id: str, limit: int = 50, offset: int = 0,
 # ─── Saved (bookmarks) ───────────────────────────────────────────────────────
 
 @app.post("/users/{user_id}/saved", tags=["Saved"])
-def add_saved(user_id: str, body: SavedAddRequest, db: Session = Depends(get_db)):
+def add_saved(
+    user_id: str,
+    body: SavedAddRequest,
+    _: UserRow = Depends(require_self),
+    db: Session = Depends(get_db),
+):
     try:
         app_instance.saved_service.add(db, user_id, body.movie_id)
         return {"ok": True, "movie_id": body.movie_id}
@@ -558,7 +638,12 @@ def add_saved(user_id: str, body: SavedAddRequest, db: Session = Depends(get_db)
 
 
 @app.delete("/users/{user_id}/saved/{movie_id}", tags=["Saved"])
-def remove_saved(user_id: str, movie_id: str, db: Session = Depends(get_db)):
+def remove_saved(
+    user_id: str,
+    movie_id: str,
+    _: UserRow = Depends(require_self),
+    db: Session = Depends(get_db),
+):
     app_instance.saved_service.remove(db, user_id, movie_id)
     return {"ok": True}
 
@@ -573,7 +658,12 @@ def get_saved(user_id: str, limit: int = 50, offset: int = 0,
 # ─── Reviews ─────────────────────────────────────────────────────────────────
 
 @app.post("/users/{user_id}/reviews", tags=["Reviews"])
-def submit_review(user_id: str, body: ReviewSubmitRequest, db: Session = Depends(get_db)):
+def submit_review(
+    user_id: str,
+    body: ReviewSubmitRequest,
+    _: UserRow = Depends(require_self),
+    db: Session = Depends(get_db),
+):
     try:
         review = app_instance.review_service.submit(
             db, user_id, body.movie_id, body.rating, body.text,
@@ -584,7 +674,12 @@ def submit_review(user_id: str, body: ReviewSubmitRequest, db: Session = Depends
 
 
 @app.delete("/users/{user_id}/reviews/{movie_id}", tags=["Reviews"])
-def delete_review(user_id: str, movie_id: str, db: Session = Depends(get_db)):
+def delete_review(
+    user_id: str,
+    movie_id: str,
+    _: UserRow = Depends(require_self),
+    db: Session = Depends(get_db),
+):
     if not app_instance.review_service.delete(db, user_id, movie_id):
         raise HTTPException(status_code=404, detail="Review not found")
     return {"ok": True}

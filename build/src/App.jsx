@@ -13,11 +13,17 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 // API.call() returns the parsed JSON response, or null if the server is unreachable.
 // On null, callers fall back to mock data so the UI never appears broken.
+//
+// Auth: the session_token goes into Authorization: Bearer ... so it doesn't
+// end up in proxy/CDN access logs the way ?session_token= did. Backend still
+// accepts the legacy query-param form for one release as a fallback.
 async function api(method, path, body, token) {
   try {
-    const res = await fetch(`${API_BASE}${path}${token ? `?session_token=${token}` : ""}`, {
+    const headers = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(`${API_BASE}${path}`, {
       method,
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: body ? JSON.stringify(body) : undefined,
     });
     if (!res.ok) {
