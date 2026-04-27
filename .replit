@@ -8,7 +8,7 @@ entrypoint = "build/backend/api.py"
 
 # What "Run" does in the Replit IDE — useful for poking at the app inside
 # Replit before deploying. Mirrors what `make dev` does locally.
-run = "cd build/backend && pip install -r requirements.txt && alembic upgrade head && uvicorn api:app --host 0.0.0.0 --port 8000"
+run = "cd build/backend && pip install -r requirements.txt && alembic upgrade head && uvicorn api:app --host 0.0.0.0 --port 5000"
 
 [nix]
 channel = "stable-24_05"
@@ -17,7 +17,7 @@ channel = "stable-24_05"
 # the primary HTTP service in autoscale mode. uvicorn binds to $PORT,
 # which Replit injects.
 [[ports]]
-localPort = 8000
+localPort = 5000
 externalPort = 80
 
 [deployment]
