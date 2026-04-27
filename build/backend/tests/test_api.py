@@ -27,6 +27,33 @@ def test_healthz_db_ping(client):
     assert r.json() == {"status": "ok", "db": "ok"}
 
 
+def test_request_id_header_round_trip(client):
+    """The middleware should accept an inbound X-Request-Id, echo it back,
+    and generate one when the client doesn't supply one."""
+    # Client supplies one
+    r = client.get("/", headers={"X-Request-Id": "test-rid-abc-123"})
+    assert r.headers["x-request-id"] == "test-rid-abc-123"
+
+    # Client omits — we mint one (just confirm presence + uuid-ish length)
+    r = client.get("/")
+    rid = r.headers.get("x-request-id")
+    assert rid and len(rid) >= 8
+
+
+def test_login_is_rate_limited(client):
+    """slowapi should 429 after 10 requests/min from the same IP."""
+    body = {"id_token": "sub_ratelimit|RL|rl@x.com"}
+    # First 10 succeed
+    ok = 0
+    for _ in range(10):
+        if client.post("/auth/login", json=body).status_code == 200:
+            ok += 1
+    assert ok == 10
+    # 11th hits the limit
+    r = client.post("/auth/login", json=body)
+    assert r.status_code == 429
+
+
 def test_seeded_movies(client):
     r = client.get("/movies")
     assert r.status_code == 200
