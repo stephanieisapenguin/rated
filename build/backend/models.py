@@ -166,3 +166,36 @@ class SessionRow(Base):
     user_id     = Column(String, ForeignKey("users.user_id"), nullable=False, index=True)
     created_at  = Column(Float, nullable=False, default=lambda: time.time())
     expires_at  = Column(Float, nullable=False)
+
+
+class NotificationRow(Base):
+    """In-app notification. user_id is the recipient. type is a stable string
+    ('follow', 'review', 'rank') so the frontend can render different layouts.
+    actor_id + target_id let the UI link to the user/movie that caused it.
+    body is a free-text fallback when richer rendering isn't available."""
+    __tablename__ = "notifications"
+    __table_args__ = (
+        Index("ix_notifications_user_read", "user_id", "read"),
+        Index("ix_notifications_user_created", "user_id", "created_at"),
+    )
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    user_id     = Column(String, ForeignKey("users.user_id"), nullable=False)
+    type        = Column(String, nullable=False)        # "follow" | "review" | "rank"
+    actor_id    = Column(String, ForeignKey("users.user_id"), nullable=True)
+    target_id   = Column(String, nullable=True)         # movie_id or another user_id, by type
+    body        = Column(Text, nullable=True)
+    read        = Column(Integer, nullable=False, default=0)  # 0 / 1 — sqlite-friendly bool
+    created_at  = Column(Float, nullable=False, default=lambda: time.time())
+
+    def to_dict(self):
+        return {
+            "id":         self.id,
+            "user_id":    self.user_id,
+            "type":       self.type,
+            "actor_id":   self.actor_id,
+            "target_id":  self.target_id,
+            "body":       self.body,
+            "read":       bool(self.read),
+            "created_at": self.created_at,
+        }

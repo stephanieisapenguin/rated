@@ -43,6 +43,7 @@ TAGS = [
     {"name": "Saved",     "description": "Bookmarks."},
     {"name": "Reviews",   "description": "Written reviews. One per (user, movie)."},
     {"name": "Feed",      "description": "Activity from followed users."},
+    {"name": "Notifications", "description": "In-app notifications. Auto-created on follow today."},
 ]
 
 
@@ -458,6 +459,59 @@ def get_user_by_username(username: str, db: Session = Depends(get_db)):
     return d
 
 
+@app.get("/users/{user_id}/stats", tags=["Users"])
+def get_user_stats(user_id: str, db: Session = Depends(get_db)):
+    """Aggregate counts + tastes for a user's profile screen.
+    All numbers are computed server-side so the UI doesn't reimplement them."""
+    user = db.get(UserRow, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+    rank_count = db.execute(
+        select(func.count()).select_from(RankingRow).where(RankingRow.user_id == user_id)
+    ).scalar() or 0
+
+    avg_score = db.execute(
+        select(func.avg(RankingRow.score)).where(RankingRow.user_id == user_id)
+    ).scalar()
+
+    review_count = db.execute(
+        select(func.count()).select_from(ReviewRow).where(ReviewRow.user_id == user_id)
+    ).scalar() or 0
+
+    # Top genres: GROUP BY genre on the user's rankings, sort by count desc.
+    top_genres = [
+        {"genre": g, "count": int(c)}
+        for g, c in db.execute(
+            select(MovieRow.genre, func.count(RankingRow.id))
+            .join(RankingRow, RankingRow.movie_id == MovieRow.movie_id)
+            .where(RankingRow.user_id == user_id, MovieRow.genre.isnot(None))
+            .group_by(MovieRow.genre)
+            .order_by(func.count(RankingRow.id).desc())
+            .limit(5)
+        )
+    ]
+
+    # Most recent rankings — full movie + score, capped at 10.
+    recent = list(db.execute(
+        select(RankingRow)
+        .where(RankingRow.user_id == user_id)
+        .order_by(RankingRow.ranked_at.desc())
+        .limit(10)
+    ).scalars())
+
+    return {
+        "user_id": user_id,
+        "ranking_count": rank_count,
+        "review_count": review_count,
+        "avg_score": round(float(avg_score), 2) if avg_score is not None else 0.0,
+        "follower_count": app_instance.feed_service.follower_count(db, user_id),
+        "following_count": app_instance.feed_service.following_count(db, user_id),
+        "top_genres": top_genres,
+        "recent_rankings": [r.to_dict() for r in recent],
+    }
+
+
 # ─── Rankings ────────────────────────────────────────────────────────────────
 
 @app.post("/users/{user_id}/rankings", tags=["Rankings"])
@@ -597,3 +651,47 @@ def get_user_reviews(user_id: str, limit: int = 50, offset: int = 0,
     return [r.to_dict() for r in app_instance.review_service.get_for_user(
         db, user_id, limit=lim, offset=off,
     )]
+
+
+# ─── Notifications ───────────────────────────────────────────────────────────
+
+@app.get("/users/{user_id}/notifications", tags=["Notifications"])
+def list_notifications(
+    user_id: str,
+    unread_only: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    """Notifications for {user_id}, newest first. ?unread_only=true filters
+    to unread. Always includes the unread_count for the badge."""
+    if not db.get(UserRow, user_id):
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+    lim, off = _clamp_pagination(limit, offset)
+    rows = app_instance.notification_service.list_for_user(
+        db, user_id, unread_only=unread_only, limit=lim, offset=off,
+    )
+    return {
+        "items": [r.to_dict() for r in rows],
+        "unread_count": app_instance.notification_service.unread_count(db, user_id),
+    }
+
+
+@app.post("/users/{user_id}/notifications/{notification_id}/read", tags=["Notifications"])
+def mark_notification_read(
+    user_id: str,
+    notification_id: int,
+    db: Session = Depends(get_db),
+):
+    ok = app_instance.notification_service.mark_one_read(db, user_id, notification_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"ok": True}
+
+
+@app.post("/users/{user_id}/notifications/mark-all-read", tags=["Notifications"])
+def mark_all_notifications_read(user_id: str, db: Session = Depends(get_db)):
+    if not db.get(UserRow, user_id):
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+    n = app_instance.notification_service.mark_all_read(db, user_id)
+    return {"ok": True, "marked_read": n}

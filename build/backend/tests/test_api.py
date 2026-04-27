@@ -318,6 +318,137 @@ def test_followers_404_for_unknown_user(client):
     assert client.get("/users/no-such-user/following").status_code == 404
 
 
+# ─── User stats ──────────────────────────────────────────────────────────────
+
+
+def test_user_stats_for_seeded_user(client):
+    """cinephile99 has 4 seeded rankings: m-002(10), m-001(9), m-004(9), m-003(8).
+    avg = 9.0, top genre = action (Dark Knight + Whiplash isn't action — actually
+    Whiplash is Drama and TDK is Action, so Action=1, Sci-Fi=1, Thriller=1, Drama=1)."""
+    cine = client.get("/users/by-username/cinephile99").json()
+    s = client.get(f"/users/{cine['user_id']}/stats").json()
+    assert s["user_id"] == cine["user_id"]
+    assert s["ranking_count"] == 4
+    assert s["avg_score"] == 9.0
+    assert s["review_count"] == 0
+    assert s["follower_count"] == 0
+    assert s["following_count"] == 0
+    # Top genres covers the 4 ranked movies — 4 distinct genres each appearing once.
+    assert {g["genre"] for g in s["top_genres"]} == {
+        "Sci-Fi", "Thriller", "Action", "Drama",
+    }
+    # Recent rankings list capped at 10, ordered by ranked_at desc
+    assert len(s["recent_rankings"]) == 4
+    assert all("score" in r and "movie" in r for r in s["recent_rankings"])
+
+
+def test_user_stats_404_for_unknown_user(client):
+    assert client.get("/users/no-such-user/stats").status_code == 404
+
+
+def test_user_stats_for_user_with_no_rankings(client):
+    """A freshly-created user with nothing yet — every count zero, avg_score 0.0."""
+    user_id = _login(client, sub="empty", name="Empty", email="e@x.com")
+    s = client.get(f"/users/{user_id}/stats").json()
+    assert s["ranking_count"] == 0
+    assert s["review_count"] == 0
+    assert s["avg_score"] == 0.0
+    assert s["top_genres"] == []
+    assert s["recent_rankings"] == []
+
+
+# ─── Notifications ───────────────────────────────────────────────────────────
+
+
+def test_follow_emits_notification_on_followee(client):
+    """When me follows cinephile99, cinephile99 sees a notification."""
+    me = _login_full(client, sub="me", name="Me", email="me@x.com")
+    me_id = me["user_id"]
+    cine = client.get("/users/by-username/cinephile99").json()
+    cine_id = cine["user_id"]
+    # claim a username on me so the notification body has @handle
+    client.post("/auth/username", params={"session_token": me["session_token"]},
+                json={"username": "meeee"})
+
+    # cine has no notifications yet
+    n0 = client.get(f"/users/{cine_id}/notifications").json()
+    assert n0["unread_count"] == 0
+    assert n0["items"] == []
+
+    # follow happens
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+
+    # cine sees one new notification
+    n1 = client.get(f"/users/{cine_id}/notifications").json()
+    assert n1["unread_count"] == 1
+    assert len(n1["items"]) == 1
+    note = n1["items"][0]
+    assert note["type"] == "follow"
+    assert note["actor_id"] == me_id
+    assert note["read"] is False
+    assert "meeee" in (note["body"] or "")
+
+
+def test_repeat_follow_does_not_double_notify(client):
+    """Following the same person twice creates one notification, not two."""
+    me_id = _login(client, sub="dup", name="Dup", email="d@x.com")
+    cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
+
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})  # idempotent
+
+    items = client.get(f"/users/{cine_id}/notifications").json()["items"]
+    assert len(items) == 1
+
+
+def test_mark_one_notification_read(client):
+    me_id = _login(client, sub="m1", name="M", email="m1@x.com")
+    cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+
+    note_id = client.get(f"/users/{cine_id}/notifications").json()["items"][0]["id"]
+    r = client.post(f"/users/{cine_id}/notifications/{note_id}/read")
+    assert r.status_code == 200
+
+    after = client.get(f"/users/{cine_id}/notifications").json()
+    assert after["unread_count"] == 0
+    assert after["items"][0]["read"] is True
+
+
+def test_mark_all_notifications_read(client):
+    cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
+    # Three different users follow cine → three notifications
+    for sub in ("a1", "a2", "a3"):
+        uid = _login(client, sub=sub, name=sub, email=f"{sub}@x.com")
+        client.post(f"/users/{uid}/follow", json={"followee_id": cine_id})
+
+    assert client.get(f"/users/{cine_id}/notifications").json()["unread_count"] == 3
+
+    r = client.post(f"/users/{cine_id}/notifications/mark-all-read")
+    assert r.status_code == 200 and r.json()["marked_read"] == 3
+    assert client.get(f"/users/{cine_id}/notifications").json()["unread_count"] == 0
+
+
+def test_unread_only_filter(client):
+    me_id = _login(client, sub="uo", name="UO", email="uo@x.com")
+    cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+
+    # mark it read
+    note_id = client.get(f"/users/{cine_id}/notifications").json()["items"][0]["id"]
+    client.post(f"/users/{cine_id}/notifications/{note_id}/read")
+
+    # unread_only should return nothing now
+    assert client.get(f"/users/{cine_id}/notifications", params={"unread_only": True}).json()["items"] == []
+    # but full list still has the read item
+    assert len(client.get(f"/users/{cine_id}/notifications").json()["items"]) == 1
+
+
+def test_notifications_404_for_unknown_user(client):
+    assert client.get("/users/no-such-user/notifications").status_code == 404
+    assert client.post("/users/no-such-user/notifications/mark-all-read").status_code == 404
+
+
 # ─── Pagination ──────────────────────────────────────────────────────────────
 
 

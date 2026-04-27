@@ -75,5 +75,6 @@ def init_db() -> None:
     from models import (  # noqa: F401
         UserRow, MovieRow, RankingRow, PairwiseRow,
         WatchlistRow, SavedRow, ReviewRow, FollowRow, SessionRow,
+        NotificationRow,
     )
     Base.metadata.create_all(bind=engine)

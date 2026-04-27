@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 from models import (
     UserRow, MovieRow, RankingRow, PairwiseRow,
     WatchlistRow, SavedRow, ReviewRow, FollowRow, SessionRow,
+    NotificationRow,
 )
 
 
@@ -254,9 +255,11 @@ class FeedService:
     def follow(self, db: Session, follower_id: str, followee_id: str) -> None:
         if follower_id == followee_id:
             raise ValueError("Cannot follow yourself")
-        if not db.get(UserRow, follower_id) or not db.get(UserRow, followee_id):
+        follower = db.get(UserRow, follower_id)
+        followee = db.get(UserRow, followee_id)
+        if not follower or not followee:
             raise ValueError("User not found")
-        # No-op if already following.
+        # No-op if already following — don't double-emit notifications.
         existing = db.execute(
             select(FollowRow).where(
                 FollowRow.follower_id == follower_id,
@@ -266,6 +269,14 @@ class FeedService:
         if existing:
             return
         db.add(FollowRow(follower_id=follower_id, followee_id=followee_id))
+        # Emit a notification on the followee.
+        actor_label = follower.username or follower.name or follower.user_id[:8]
+        db.add(NotificationRow(
+            user_id=followee_id,
+            type="follow",
+            actor_id=follower_id,
+            body=f"@{actor_label} followed you" if follower.username else f"{actor_label} followed you",
+        ))
         db.commit()
 
     def unfollow(self, db: Session, follower_id: str, followee_id: str) -> None:
@@ -449,6 +460,50 @@ class ReviewService:
         ).scalars())
 
 
+# ─── Notification Service ────────────────────────────────────────────────────
+
+class NotificationService:
+    """List, mark-read, and create notifications for a user. Auto-emit happens
+    inline in other services (e.g. FeedService.follow), keeping callers
+    decoupled from notification bookkeeping."""
+
+    def list_for_user(self, db: Session, user_id: str, *,
+                      unread_only: bool = False,
+                      limit: int = 50, offset: int = 0) -> list[NotificationRow]:
+        stmt = select(NotificationRow).where(NotificationRow.user_id == user_id)
+        if unread_only:
+            stmt = stmt.where(NotificationRow.read == 0)
+        stmt = stmt.order_by(NotificationRow.created_at.desc()).offset(offset).limit(limit)
+        return list(db.execute(stmt).scalars())
+
+    def unread_count(self, db: Session, user_id: str) -> int:
+        return db.execute(
+            select(func.count()).select_from(NotificationRow)
+            .where(NotificationRow.user_id == user_id, NotificationRow.read == 0)
+        ).scalar() or 0
+
+    def mark_one_read(self, db: Session, user_id: str, notification_id: int) -> bool:
+        row = db.get(NotificationRow, notification_id)
+        if not row or row.user_id != user_id:
+            return False
+        if row.read:
+            return True
+        row.read = 1
+        db.commit()
+        return True
+
+    def mark_all_read(self, db: Session, user_id: str) -> int:
+        result = db.execute(
+            select(NotificationRow)
+            .where(NotificationRow.user_id == user_id, NotificationRow.read == 0)
+        )
+        rows = result.scalars().all()
+        for r in rows:
+            r.read = 1
+        db.commit()
+        return len(rows)
+
+
 # ─── App (DI root) ────────────────────────────────────────────────────────────
 
 class App:
@@ -456,12 +511,13 @@ class App:
     state lives in the SQLAlchemy session passed through each call."""
 
     def __init__(self):
-        self.auth              = AuthService()
-        self.ranking_service   = RankingService()
-        self.feed_service      = FeedService()
-        self.watchlist_service = WatchlistService()
-        self.saved_service     = SavedMovieService()
-        self.review_service    = ReviewService()
+        self.auth                  = AuthService()
+        self.ranking_service       = RankingService()
+        self.feed_service          = FeedService()
+        self.watchlist_service     = WatchlistService()
+        self.saved_service         = SavedMovieService()
+        self.review_service        = ReviewService()
+        self.notification_service  = NotificationService()
 
     def seed_movies(self, db: Session, movies: list[MovieRow]) -> None:
         for m in movies:
