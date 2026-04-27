@@ -361,24 +361,19 @@ def test_user_stats_for_user_with_no_rankings(client):
 
 
 def test_follow_emits_notification_on_followee(client):
-    """When me follows cinephile99, cinephile99 sees a notification."""
+    """When me follows cinephile99, cinephile99 sees a notification with the
+    actor object populated."""
     me = _login_full(client, sub="me", name="Me", email="me@x.com")
     me_id = me["user_id"]
-    cine = client.get("/users/by-username/cinephile99").json()
-    cine_id = cine["user_id"]
-    # claim a username on me so the notification body has @handle
+    cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
     client.post("/auth/username", params={"session_token": me["session_token"]},
                 json={"username": "meeee"})
 
-    # cine has no notifications yet
     n0 = client.get(f"/users/{cine_id}/notifications").json()
-    assert n0["unread_count"] == 0
-    assert n0["items"] == []
+    assert n0["unread_count"] == 0 and n0["items"] == []
 
-    # follow happens
     client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
 
-    # cine sees one new notification
     n1 = client.get(f"/users/{cine_id}/notifications").json()
     assert n1["unread_count"] == 1
     assert len(n1["items"]) == 1
@@ -386,7 +381,31 @@ def test_follow_emits_notification_on_followee(client):
     assert note["type"] == "follow"
     assert note["actor_id"] == me_id
     assert note["read"] is False
-    assert "meeee" in (note["body"] or "")
+    # New shape: actor object joined in at read time, no baked-in body.
+    assert note["actor"] == {"user_id": me_id, "username": "meeee", "name": "Me"}
+
+
+def test_notification_actor_reflects_current_username(client):
+    """Renaming the actor changes what /notifications returns — proof
+    that we're not storing the username in the notification row."""
+    me = _login_full(client, sub="rename", name="Rename", email="r@x.com")
+    me_id = me["user_id"]
+    cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
+
+    client.post("/auth/username", params={"session_token": me["session_token"]},
+                json={"username": "before"})
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+
+    note = client.get(f"/users/{cine_id}/notifications").json()["items"][0]
+    assert note["actor"]["username"] == "before"
+
+    # Unfollow + rename + refollow — but actually, rename doesn't even need
+    # a re-emit. Re-list the same notification → actor JOIN reflects the new name.
+    # Force a username change directly via the same flow:
+    client.post("/auth/username", params={"session_token": me["session_token"]},
+                json={"username": "after"})
+    note2 = client.get(f"/users/{cine_id}/notifications").json()["items"][0]
+    assert note2["actor"]["username"] == "after"
 
 
 def test_repeat_follow_does_not_double_notify(client):
@@ -447,6 +466,58 @@ def test_unread_only_filter(client):
 def test_notifications_404_for_unknown_user(client):
     assert client.get("/users/no-such-user/notifications").status_code == 404
     assert client.post("/users/no-such-user/notifications/mark-all-read").status_code == 404
+
+
+def test_notification_type_filter(client):
+    """?type=follow returns only follow notifications. ?type=bogus → 400."""
+    cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
+    me_id = _login(client, sub="tf", name="TF", email="tf@x.com")
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+
+    follows = client.get(f"/users/{cine_id}/notifications", params={"type": "follow"}).json()
+    assert len(follows["items"]) == 1
+    assert follows["items"][0]["type"] == "follow"
+
+    # Filter that matches no rows → empty list, not error
+    nothing = client.get(f"/users/{cine_id}/notifications", params={"type": "review"}).json()
+    assert nothing["items"] == []
+
+    # Bogus type → 400 with a helpful message
+    bad = client.get(f"/users/{cine_id}/notifications", params={"type": "bogus"})
+    assert bad.status_code == 400
+    assert "bogus" in bad.json()["detail"]
+
+
+def test_notification_delete(client):
+    cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
+    me_id = _login(client, sub="del", name="Del", email="del@x.com")
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+
+    note_id = client.get(f"/users/{cine_id}/notifications").json()["items"][0]["id"]
+    r = client.delete(f"/users/{cine_id}/notifications/{note_id}")
+    assert r.status_code == 200 and r.json() == {"ok": True}
+
+    # Gone for good
+    after = client.get(f"/users/{cine_id}/notifications").json()
+    assert after["items"] == []
+    assert after["unread_count"] == 0
+
+    # Second delete on same id → 404
+    assert client.delete(f"/users/{cine_id}/notifications/{note_id}").status_code == 404
+
+
+def test_notification_delete_only_owner(client):
+    """User A can't delete user B's notifications even if they guess the id."""
+    cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
+    me_id = _login(client, sub="atk", name="A", email="a@x.com")
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+    note_id = client.get(f"/users/{cine_id}/notifications").json()["items"][0]["id"]
+
+    other_id = _login(client, sub="atk2", name="B", email="b@x.com")
+    # other tries to delete cine's notification → 404 (looks like "not found")
+    assert client.delete(f"/users/{other_id}/notifications/{note_id}").status_code == 404
+    # cine still has it
+    assert len(client.get(f"/users/{cine_id}/notifications").json()["items"]) == 1
 
 
 # ─── Pagination ──────────────────────────────────────────────────────────────

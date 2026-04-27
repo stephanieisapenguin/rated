@@ -659,20 +659,30 @@ def get_user_reviews(user_id: str, limit: int = 50, offset: int = 0,
 def list_notifications(
     user_id: str,
     unread_only: bool = False,
+    type: Optional[str] = None,   # noqa: A002 — query-param shadow is fine here
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
     """Notifications for {user_id}, newest first. ?unread_only=true filters
-    to unread. Always includes the unread_count for the badge."""
+    to unread; ?type=follow|review|rank filters to one kind. Always includes
+    the unread_count so the badge and the list share one round-trip.
+    Each item carries an `actor` object (username/name) JOINed at read time
+    so renaming the actor doesn't leave stale text behind."""
     if not db.get(UserRow, user_id):
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
     lim, off = _clamp_pagination(limit, offset)
-    rows = app_instance.notification_service.list_for_user(
-        db, user_id, unread_only=unread_only, limit=lim, offset=off,
-    )
+    try:
+        items = app_instance.notification_service.list_for_user(
+            db, user_id,
+            unread_only=unread_only,
+            type_filter=type,
+            limit=lim, offset=off,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {
-        "items": [r.to_dict() for r in rows],
+        "items": items,
         "unread_count": app_instance.notification_service.unread_count(db, user_id),
     }
 
@@ -695,3 +705,18 @@ def mark_all_notifications_read(user_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
     n = app_instance.notification_service.mark_all_read(db, user_id)
     return {"ok": True, "marked_read": n}
+
+
+@app.delete("/users/{user_id}/notifications/{notification_id}", tags=["Notifications"])
+def delete_notification(
+    user_id: str,
+    notification_id: int,
+    db: Session = Depends(get_db),
+):
+    """Permanently remove one notification — for a "clear" gesture in the UI.
+    Idempotent on already-deleted ids? No — returns 404, so the client knows
+    the row really wasn't there. Mark-read is the soft alternative."""
+    ok = app_instance.notification_service.delete(db, user_id, notification_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"ok": True}

@@ -19,6 +19,7 @@ The App() class at the bottom wires everything together so callers can do
 
 from __future__ import annotations
 
+import enum
 import os
 import re
 import secrets
@@ -38,6 +39,15 @@ from models import (
 
 # Session lifetime — 30 days unless overridden.
 SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", 30 * 24 * 3600))
+
+
+class NotificationType(str, enum.Enum):
+    """Closed set of notification kinds. Stored as a string in the DB so
+    SQLite/Postgres are both happy without a real ENUM type. Validated in the
+    service layer instead. Add new variants here when emitting new kinds."""
+    FOLLOW = "follow"
+    REVIEW = "review"   # reserved — not auto-emitted yet
+    RANK   = "rank"     # reserved — not auto-emitted yet
 
 
 # ─── Convenience factories ────────────────────────────────────────────────────
@@ -255,9 +265,7 @@ class FeedService:
     def follow(self, db: Session, follower_id: str, followee_id: str) -> None:
         if follower_id == followee_id:
             raise ValueError("Cannot follow yourself")
-        follower = db.get(UserRow, follower_id)
-        followee = db.get(UserRow, followee_id)
-        if not follower or not followee:
+        if not db.get(UserRow, follower_id) or not db.get(UserRow, followee_id):
             raise ValueError("User not found")
         # No-op if already following — don't double-emit notifications.
         existing = db.execute(
@@ -269,13 +277,13 @@ class FeedService:
         if existing:
             return
         db.add(FollowRow(follower_id=follower_id, followee_id=followee_id))
-        # Emit a notification on the followee.
-        actor_label = follower.username or follower.name or follower.user_id[:8]
+        # Emit a notification on the followee. Body is left null; the actor's
+        # current username/name is JOINed in at list time, so renaming the
+        # actor doesn't leave stale text in the row.
         db.add(NotificationRow(
             user_id=followee_id,
-            type="follow",
+            type=NotificationType.FOLLOW.value,
             actor_id=follower_id,
-            body=f"@{actor_label} followed you" if follower.username else f"{actor_label} followed you",
         ))
         db.commit()
 
@@ -463,18 +471,56 @@ class ReviewService:
 # ─── Notification Service ────────────────────────────────────────────────────
 
 class NotificationService:
-    """List, mark-read, and create notifications for a user. Auto-emit happens
-    inline in other services (e.g. FeedService.follow), keeping callers
-    decoupled from notification bookkeeping."""
+    """List, mark-read, delete, and create notifications for a user. Auto-emit
+    happens inline in other services (e.g. FeedService.follow), keeping
+    callers decoupled from notification bookkeeping.
+
+    list_for_user() returns dicts (not rows) because we LEFT JOIN the actor's
+    current username/name — that way renaming an actor doesn't leave stale
+    text in old notifications.
+    """
+
+    @staticmethod
+    def _validate_type(type_filter: Optional[str]) -> Optional[str]:
+        if type_filter is None:
+            return None
+        try:
+            return NotificationType(type_filter).value
+        except ValueError:
+            valid = ", ".join(t.value for t in NotificationType)
+            raise ValueError(f"Unknown notification type {type_filter!r}; expected one of: {valid}")
 
     def list_for_user(self, db: Session, user_id: str, *,
                       unread_only: bool = False,
-                      limit: int = 50, offset: int = 0) -> list[NotificationRow]:
-        stmt = select(NotificationRow).where(NotificationRow.user_id == user_id)
+                      type_filter: Optional[str] = None,
+                      limit: int = 50, offset: int = 0) -> list[dict]:
+        type_value = self._validate_type(type_filter)
+        # LEFT JOIN keeps notifications visible even if their actor was deleted.
+        actor = UserRow  # alias for readability
+        stmt = (
+            select(NotificationRow, actor)
+            .outerjoin(actor, NotificationRow.actor_id == actor.user_id)
+            .where(NotificationRow.user_id == user_id)
+        )
         if unread_only:
             stmt = stmt.where(NotificationRow.read == 0)
+        if type_value is not None:
+            stmt = stmt.where(NotificationRow.type == type_value)
         stmt = stmt.order_by(NotificationRow.created_at.desc()).offset(offset).limit(limit)
-        return list(db.execute(stmt).scalars())
+
+        out = []
+        for note, actor_row in db.execute(stmt):
+            d = note.to_dict()
+            d["actor"] = (
+                {
+                    "user_id":  actor_row.user_id,
+                    "username": actor_row.username,
+                    "name":     actor_row.name,
+                }
+                if actor_row else None
+            )
+            out.append(d)
+        return out
 
     def unread_count(self, db: Session, user_id: str) -> int:
         return db.execute(
@@ -502,6 +548,15 @@ class NotificationService:
             r.read = 1
         db.commit()
         return len(rows)
+
+    def delete(self, db: Session, user_id: str, notification_id: int) -> bool:
+        """Delete one notification. Returns False if not found or not owned."""
+        row = db.get(NotificationRow, notification_id)
+        if not row or row.user_id != user_id:
+            return False
+        db.delete(row)
+        db.commit()
+        return True
 
 
 # ─── App (DI root) ────────────────────────────────────────────────────────────
