@@ -37,3 +37,7 @@ backend/**/__pycache__/
 backend/.pytest_cache/
 backend/.ruff_cache/
 backend/.mypy_cache/
+
+# Playwright
+playwright-report/
+test-results/
