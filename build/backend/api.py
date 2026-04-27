@@ -186,8 +186,7 @@ def root(db: Session = Depends(get_db)):
     }
 
 
-@app.get("/healthz", tags=["Health"])
-def healthz(db: Session = Depends(get_db)):
+def _healthz_impl(db: Session):
     """Liveness + DB-readiness check. 200 when reachable + DB responding,
     503 when the DB connection is broken. Hosts (Render, Fly, k8s) hit this
     every few seconds — keep it cheap."""
@@ -196,6 +195,19 @@ def healthz(db: Session = Depends(get_db)):
         return {"status": "ok", "db": "ok"}
     except SQLAlchemyError as e:
         raise HTTPException(status_code=503, detail={"status": "fail", "db": str(e)[:200]})
+
+
+@app.get("/healthz", tags=["Health"])
+def healthz(db: Session = Depends(get_db)):
+    return _healthz_impl(db)
+
+
+# Alias: Replit's edge proxy reserves /healthz for its own liveness probes,
+# so external traffic to /healthz never reaches our app. /health is the
+# externally-callable equivalent — same response shape.
+@app.get("/health", tags=["Health"])
+def health(db: Session = Depends(get_db)):
+    return _healthz_impl(db)
 
 
 # ─── Movies ──────────────────────────────────────────────────────────────────
