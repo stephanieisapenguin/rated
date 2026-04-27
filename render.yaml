@@ -1,0 +1,45 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# When you connect the repo to Render and import as a Blueprint, this file
+# provisions the service automatically (no manual dashboard form-filling).
+
+services:
+  - type: web
+    name: rated-api
+    runtime: python
+    rootDir: build/backend
+    plan: free                # 0.1 CPU / 512 MB RAM, sleeps after 15min idle
+    region: oregon
+    branch: main              # auto-deploy on push to main
+    healthCheckPath: /healthz # the endpoint we just added; Render polls this
+
+    # Pre-deploy: install deps, then bring the schema up to head before
+    # the new code starts serving. Idempotent — re-running upgrade head
+    # on an already-current DB is a no-op.
+    buildCommand: pip install -r requirements.txt
+    preDeployCommand: alembic upgrade head
+    startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
+
+    envVars:
+      # Allow the Netlify production URL through CORS. Add more comma-
+      # separated origins later when you have a custom domain.
+      - key: ALLOWED_ORIGINS
+        value: https://silver-salamander-08daf4.netlify.app
+
+      # Sessions live for 30 days unless you override.
+      - key: SESSION_TTL_SECONDS
+        value: "2592000"
+
+      # Real Google OAuth verification. Leave blank to keep the
+      # "sub|name|email" stub format (fine for demos). Set this only when
+      # the frontend is also wired to send a real Google id_token.
+      - key: GOOGLE_CLIENT_ID
+        sync: false           # set in Render dashboard → Environment
+
+      # Storage. Default = SQLite in the container, which RESETS every time
+      # Render rebuilds on free tier (data is ephemeral). For real
+      # persistence, uncomment + set a Postgres URL below — Neon (free
+      # tier) or Netlify DB both work; format:
+      #   postgresql+psycopg://user:pass@host:5432/dbname
+      # Then add `psycopg[binary]==3.x` to backend/requirements.txt.
+      - key: DATABASE_URL
+        sync: false           # set in Render dashboard → Environment
