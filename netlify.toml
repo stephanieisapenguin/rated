@@ -1,0 +1,23 @@
+# Top-level netlify.toml.
+# Required at the repo root (not under build/) because Netlify reads it from
+# the linked-repo root before cd'ing anywhere. The `base` key tells Netlify
+# to switch into build/ for everything else.
+
+[build]
+  base    = "build"
+  command = "npm run build"
+  publish = "dist"          # resolves to build/dist relative to base
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# SPA fallback: every route serves index.html so React Router (or hash-based
+# routing) handles deep links instead of Netlify returning a 404.
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200
+
+# Env vars to set in Netlify dashboard → Site settings → Environment variables:
+#   VITE_API_BASE_URL  = https://<your-backend-host>   (Render/Railway/Fly)
+#   VITE_TMDB_API_KEY  = <your TMDB v3 key>
