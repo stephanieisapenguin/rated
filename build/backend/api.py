@@ -17,12 +17,14 @@ The DB file persists across server restarts; delete it (or run `make db-reset`)
 to wipe back to seeded fixtures.
 """
 
+import os
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from db import get_db, init_db, SessionLocal
@@ -30,15 +32,36 @@ from models import FollowRow, MovieRow, RankingRow, ReviewRow, UserRow
 from rated_backend import App, Movie
 
 
+# OpenAPI tag descriptions show up as section headers in /docs and /redoc.
+TAGS = [
+    {"name": "Health",    "description": "Liveness + readiness checks for hosts."},
+    {"name": "Movies",    "description": "Catalog, search, leaderboard, per-movie aggregates."},
+    {"name": "Users",     "description": "Profiles, follow graph, user search."},
+    {"name": "Auth",      "description": "Login (Google OAuth stub) + username claim."},
+    {"name": "Rankings",  "description": "1–10 scores. One per (user, movie). Upsert semantics."},
+    {"name": "Watchlist", "description": "Plan-to-watch list."},
+    {"name": "Saved",     "description": "Bookmarks."},
+    {"name": "Reviews",   "description": "Written reviews. One per (user, movie)."},
+    {"name": "Feed",      "description": "Activity from followed users."},
+]
+
+
 # ─── App init ─────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Rated API", version="0.1.0")
+app = FastAPI(title="Rated API", version="0.1.0", openapi_tags=TAGS)
 
-# CORS — allow_origins=["*"] is fine for local development. For production,
-# replace with your Netlify domain (e.g. ["https://rated.netlify.app"]).
+# CORS — read allowlist from env. Default covers local dev (Vite at :5173).
+# For production set ALLOWED_ORIGINS to a comma-separated list of frontend URLs,
+# e.g. "https://silver-salamander-08daf4.netlify.app,https://rated.com".
+_origins_env = os.environ.get("ALLOWED_ORIGINS", "").strip()
+if _origins_env:
+    ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",") if o.strip()]
+else:
+    ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -135,7 +158,7 @@ class ReviewSubmitRequest(BaseModel):
 
 # ─── Health ──────────────────────────────────────────────────────────────────
 
-@app.get("/")
+@app.get("/", tags=["Health"])
 def root(db: Session = Depends(get_db)):
     movies = db.execute(select(func.count()).select_from(MovieRow)).scalar() or 0
     users = db.execute(select(func.count()).select_from(UserRow)).scalar() or 0
@@ -147,10 +170,22 @@ def root(db: Session = Depends(get_db)):
     }
 
 
+@app.get("/healthz", tags=["Health"])
+def healthz(db: Session = Depends(get_db)):
+    """Liveness + DB-readiness check. 200 when reachable + DB responding,
+    503 when the DB connection is broken. Hosts (Render, Fly, k8s) hit this
+    every few seconds — keep it cheap."""
+    try:
+        db.execute(text("SELECT 1"))
+        return {"status": "ok", "db": "ok"}
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=503, detail={"status": "fail", "db": str(e)[:200]})
+
+
 # ─── Movies ──────────────────────────────────────────────────────────────────
 # /movies/top must come before /movies/{movie_id} so "top" isn't matched as id.
 
-@app.get("/movies")
+@app.get("/movies", tags=["Movies"])
 def list_movies(
     q: Optional[str] = None,
     genre: Optional[str] = None,
@@ -167,7 +202,7 @@ def list_movies(
     return [m.to_dict() for m in db.execute(stmt).scalars()]
 
 
-@app.get("/movies/top")
+@app.get("/movies/top", tags=["Movies"])
 def top_movies(n: int = 10, db: Session = Depends(get_db)):
     return [
         {"movie": m.to_dict(), "avg_score": s}
@@ -175,7 +210,7 @@ def top_movies(n: int = 10, db: Session = Depends(get_db)):
     ]
 
 
-@app.get("/movies/{movie_id}")
+@app.get("/movies/{movie_id}", tags=["Movies"])
 def get_movie(movie_id: str, db: Session = Depends(get_db)):
     movie = db.get(MovieRow, movie_id)
     if not movie:
@@ -183,7 +218,7 @@ def get_movie(movie_id: str, db: Session = Depends(get_db)):
     return movie.to_dict()
 
 
-@app.get("/movies/{movie_id}/reviews")
+@app.get("/movies/{movie_id}/reviews", tags=["Reviews"])
 def get_movie_reviews(movie_id: str, db: Session = Depends(get_db)):
     out = []
     for r in app_instance.review_service.get_for_movie(db, movie_id):
@@ -195,7 +230,7 @@ def get_movie_reviews(movie_id: str, db: Session = Depends(get_db)):
     return out
 
 
-@app.get("/movies/{movie_id}/stats")
+@app.get("/movies/{movie_id}/stats", tags=["Movies"])
 def get_movie_stats(movie_id: str, db: Session = Depends(get_db)):
     """Aggregate counts + average for a single movie. Used by the frontend's
     movie-detail screen — it was already calling this endpoint, just nothing
@@ -221,7 +256,7 @@ def get_movie_stats(movie_id: str, db: Session = Depends(get_db)):
     }
 
 
-@app.get("/movies/{movie_id}/rankings")
+@app.get("/movies/{movie_id}/rankings", tags=["Rankings"])
 def list_movie_rankings(movie_id: str, limit: int = 50, db: Session = Depends(get_db)):
     """All rankings for a movie, highest score first then most recent."""
     if not db.get(MovieRow, movie_id):
@@ -237,7 +272,7 @@ def list_movie_rankings(movie_id: str, limit: int = 50, db: Session = Depends(ge
 
 # ─── Auth ────────────────────────────────────────────────────────────────────
 
-@app.post("/auth/login")
+@app.post("/auth/login", tags=["Auth"])
 def login(req: LoginRequest, db: Session = Depends(get_db)):
     """Stub Google login. Pass id_token = 'sub|name|email'."""
     try:
@@ -253,7 +288,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     }
 
 
-@app.get("/auth/username/check/{username}")
+@app.get("/auth/username/check/{username}", tags=["Auth"])
 def check_username(username: str, db: Session = Depends(get_db)):
     err = app_instance.auth.validate_username(username)
     if err:
@@ -263,7 +298,7 @@ def check_username(username: str, db: Session = Depends(get_db)):
     return {"available": True}
 
 
-@app.post("/auth/username")
+@app.post("/auth/username", tags=["Auth"])
 def claim_username(
     body: UsernameClaimRequest,
     session_token: str = "",
@@ -287,7 +322,7 @@ def claim_username(
 
 # ─── Users ───────────────────────────────────────────────────────────────────
 
-@app.get("/users")
+@app.get("/users", tags=["Users"])
 def list_users(
     q: Optional[str] = None,
     limit: int = 50,
@@ -325,17 +360,17 @@ def _list_follow_edge(db: Session, user_id: str, *, side: str) -> list[dict]:
     return [u.to_dict() for u in rows]
 
 
-@app.get("/users/{user_id}/followers")
+@app.get("/users/{user_id}/followers", tags=["Users"])
 def list_followers(user_id: str, db: Session = Depends(get_db)):
     return _list_follow_edge(db, user_id, side="followers")
 
 
-@app.get("/users/{user_id}/following")
+@app.get("/users/{user_id}/following", tags=["Users"])
 def list_following(user_id: str, db: Session = Depends(get_db)):
     return _list_follow_edge(db, user_id, side="following")
 
 
-@app.get("/users/{user_id}")
+@app.get("/users/{user_id}", tags=["Users"])
 def get_user(user_id: str, db: Session = Depends(get_db)):
     user = db.get(UserRow, user_id)
     if not user:
@@ -346,7 +381,7 @@ def get_user(user_id: str, db: Session = Depends(get_db)):
     return d
 
 
-@app.get("/users/by-username/{username}")
+@app.get("/users/by-username/{username}", tags=["Users"])
 def get_user_by_username(username: str, db: Session = Depends(get_db)):
     user = app_instance.auth.find_by_username(db, username)
     if not user:
@@ -359,7 +394,7 @@ def get_user_by_username(username: str, db: Session = Depends(get_db)):
 
 # ─── Rankings ────────────────────────────────────────────────────────────────
 
-@app.post("/users/{user_id}/rankings")
+@app.post("/users/{user_id}/rankings", tags=["Rankings"])
 def add_ranking(user_id: str, body: RankRequest, db: Session = Depends(get_db)):
     try:
         ranking = app_instance.ranking_service.add_ranking(
@@ -370,12 +405,12 @@ def add_ranking(user_id: str, body: RankRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.get("/users/{user_id}/rankings")
+@app.get("/users/{user_id}/rankings", tags=["Rankings"])
 def get_user_rankings(user_id: str, db: Session = Depends(get_db)):
     return [r.to_dict() for r in app_instance.ranking_service.user_rankings(db, user_id)]
 
 
-@app.post("/users/{user_id}/pairwise")
+@app.post("/users/{user_id}/pairwise", tags=["Rankings"])
 def record_pairwise(user_id: str, body: PairwiseRequest, db: Session = Depends(get_db)):
     row = app_instance.ranking_service.record_pairwise(
         db, user_id, body.winner_movie_id, body.loser_movie_id,
@@ -390,7 +425,7 @@ def record_pairwise(user_id: str, body: PairwiseRequest, db: Session = Depends(g
 
 # ─── Feed ────────────────────────────────────────────────────────────────────
 
-@app.post("/users/{user_id}/follow")
+@app.post("/users/{user_id}/follow", tags=["Feed"])
 def follow(user_id: str, body: FollowRequest, db: Session = Depends(get_db)):
     try:
         app_instance.feed_service.follow(db, user_id, body.followee_id)
@@ -399,13 +434,13 @@ def follow(user_id: str, body: FollowRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.delete("/users/{user_id}/follow/{followee_id}")
+@app.delete("/users/{user_id}/follow/{followee_id}", tags=["Feed"])
 def unfollow(user_id: str, followee_id: str, db: Session = Depends(get_db)):
     app_instance.feed_service.unfollow(db, user_id, followee_id)
     return {"ok": True}
 
 
-@app.get("/users/{user_id}/feed")
+@app.get("/users/{user_id}/feed", tags=["Feed"])
 def get_feed(user_id: str, limit: int = 20, db: Session = Depends(get_db)):
     try:
         return [r.to_dict() for r in app_instance.feed_service.get_feed(db, user_id, limit)]
@@ -415,7 +450,7 @@ def get_feed(user_id: str, limit: int = 20, db: Session = Depends(get_db)):
 
 # ─── Watchlist ───────────────────────────────────────────────────────────────
 
-@app.post("/users/{user_id}/watchlist")
+@app.post("/users/{user_id}/watchlist", tags=["Watchlist"])
 def add_to_watchlist(user_id: str, body: WatchlistAddRequest, db: Session = Depends(get_db)):
     try:
         app_instance.watchlist_service.add(db, user_id, body.movie_id, body.item_type)
@@ -424,20 +459,20 @@ def add_to_watchlist(user_id: str, body: WatchlistAddRequest, db: Session = Depe
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.delete("/users/{user_id}/watchlist/{movie_id}")
+@app.delete("/users/{user_id}/watchlist/{movie_id}", tags=["Watchlist"])
 def remove_from_watchlist(user_id: str, movie_id: str, db: Session = Depends(get_db)):
     app_instance.watchlist_service.remove(db, user_id, movie_id)
     return {"ok": True}
 
 
-@app.get("/users/{user_id}/watchlist")
+@app.get("/users/{user_id}/watchlist", tags=["Watchlist"])
 def get_watchlist(user_id: str, db: Session = Depends(get_db)):
     return app_instance.watchlist_service.get(db, user_id)
 
 
 # ─── Saved (bookmarks) ───────────────────────────────────────────────────────
 
-@app.post("/users/{user_id}/saved")
+@app.post("/users/{user_id}/saved", tags=["Saved"])
 def add_saved(user_id: str, body: SavedAddRequest, db: Session = Depends(get_db)):
     try:
         app_instance.saved_service.add(db, user_id, body.movie_id)
@@ -446,20 +481,20 @@ def add_saved(user_id: str, body: SavedAddRequest, db: Session = Depends(get_db)
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.delete("/users/{user_id}/saved/{movie_id}")
+@app.delete("/users/{user_id}/saved/{movie_id}", tags=["Saved"])
 def remove_saved(user_id: str, movie_id: str, db: Session = Depends(get_db)):
     app_instance.saved_service.remove(db, user_id, movie_id)
     return {"ok": True}
 
 
-@app.get("/users/{user_id}/saved")
+@app.get("/users/{user_id}/saved", tags=["Saved"])
 def get_saved(user_id: str, db: Session = Depends(get_db)):
     return app_instance.saved_service.get(db, user_id)
 
 
 # ─── Reviews ─────────────────────────────────────────────────────────────────
 
-@app.post("/users/{user_id}/reviews")
+@app.post("/users/{user_id}/reviews", tags=["Reviews"])
 def submit_review(user_id: str, body: ReviewSubmitRequest, db: Session = Depends(get_db)):
     try:
         review = app_instance.review_service.submit(
@@ -470,13 +505,13 @@ def submit_review(user_id: str, body: ReviewSubmitRequest, db: Session = Depends
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.delete("/users/{user_id}/reviews/{movie_id}")
+@app.delete("/users/{user_id}/reviews/{movie_id}", tags=["Reviews"])
 def delete_review(user_id: str, movie_id: str, db: Session = Depends(get_db)):
     if not app_instance.review_service.delete(db, user_id, movie_id):
         raise HTTPException(status_code=404, detail="Review not found")
     return {"ok": True}
 
 
-@app.get("/users/{user_id}/reviews")
+@app.get("/users/{user_id}/reviews", tags=["Reviews"])
 def get_user_reviews(user_id: str, db: Session = Depends(get_db)):
     return [r.to_dict() for r in app_instance.review_service.get_for_user(db, user_id)]

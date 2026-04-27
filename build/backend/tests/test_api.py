@@ -21,6 +21,12 @@ def test_health(client):
     assert body["users_registered"] == 8
 
 
+def test_healthz_db_ping(client):
+    r = client.get("/healthz")
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok", "db": "ok"}
+
+
 def test_seeded_movies(client):
     r = client.get("/movies")
     assert r.status_code == 200
