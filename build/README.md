@@ -68,10 +68,10 @@ build/
 
 ## API location
 
-| Environment | URL                                  | Set via                          |
-|-------------|--------------------------------------|----------------------------------|
-| Local dev   | `http://localhost:8000`              | `backend/Makefile` → `make dev`  |
-| Production  | `https://<your-backend-host>`        | Netlify → env var `VITE_API_BASE_URL` (Render/Railway/Fly URL) |
+| Environment | URL                                            | Set via                          |
+|-------------|------------------------------------------------|----------------------------------|
+| Local dev   | `http://localhost:8000`                        | `backend/Makefile` → `make dev`  |
+| Production  | `https://rated-1--stephisapenguin.replit.app`  | Netlify env var `VITE_API_BASE_URL` (Replit Autoscale Deployment) |
 
 The frontend reads the URL from `import.meta.env.VITE_API_BASE_URL`
 (see `src/App.jsx`, line ~11). When unreachable, the UI silently falls back to
