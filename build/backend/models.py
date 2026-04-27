@@ -154,3 +154,15 @@ class FollowRow(Base):
     follower_id  = Column(String, ForeignKey("users.user_id"), nullable=False)
     followee_id  = Column(String, ForeignKey("users.user_id"), nullable=False)
     created_at   = Column(Float, nullable=False, default=lambda: time.time())
+
+
+class SessionRow(Base):
+    """A single login. Tokens are opaque urlsafe strings, indexed for O(1)
+    lookup. Sessions expire after SESSION_TTL_SECONDS (default 30 days).
+    Logout = delete the row."""
+    __tablename__ = "sessions"
+
+    token       = Column(String, primary_key=True)
+    user_id     = Column(String, ForeignKey("users.user_id"), nullable=False, index=True)
+    created_at  = Column(Float, nullable=False, default=lambda: time.time())
+    expires_at  = Column(Float, nullable=False)

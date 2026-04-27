@@ -274,18 +274,36 @@ def list_movie_rankings(movie_id: str, limit: int = 50, db: Session = Depends(ge
 
 @app.post("/auth/login", tags=["Auth"])
 def login(req: LoginRequest, db: Session = Depends(get_db)):
-    """Stub Google login. Pass id_token = 'sub|name|email'."""
+    """Exchange an id_token for a session_token.
+
+    When GOOGLE_CLIENT_ID env var is set, id_token must be a real Google JWT
+    (signature + audience verified server-side via google-auth).
+    Without GOOGLE_CLIENT_ID we fall back to dev-stub format 'sub|name|email'.
+
+    The returned session_token is a 256-bit urlsafe random string stored in
+    the sessions table — pass it back as ?session_token=... on protected
+    routes (e.g. /auth/username, future write endpoints)."""
     try:
         user = app_instance.auth.google_login(db, req.id_token)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    session = app_instance.auth.create_session(db, user)
     return {
         "user": user.to_dict(),
-        "session_token": app_instance.auth.generate_session_token(user),
+        "session_token": session.token,
+        "expires_at": session.expires_at,
         "user_id": user.user_id,
         "username": user.username,
         "needs_username": user.username is None,
     }
+
+
+@app.post("/auth/logout", tags=["Auth"])
+def logout(session_token: str = "", db: Session = Depends(get_db)):
+    """Invalidate the given session token. Idempotent — returns ok even if
+    the token was already gone or never existed."""
+    revoked = app_instance.auth.revoke_session(db, session_token) if session_token else False
+    return {"ok": True, "revoked": revoked}
 
 
 @app.get("/auth/username/check/{username}", tags=["Auth"])
@@ -304,11 +322,9 @@ def claim_username(
     session_token: str = "",
     db: Session = Depends(get_db),
 ):
-    """Stub: claims username for the most-recently-created user. Real auth
-    would derive the user from session_token."""
-    user = db.execute(
-        select(UserRow).order_by(UserRow.created_at.desc()).limit(1)
-    ).scalar_one_or_none()
+    """Claim a username for the user identified by session_token.
+    Returns 401 if the token is missing, unknown, or expired."""
+    user = app_instance.auth.get_user_from_session(db, session_token)
     if not user:
         raise HTTPException(status_code=401, detail="Not logged in")
     err = app_instance.auth.validate_username(body.username)

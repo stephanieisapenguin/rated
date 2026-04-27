@@ -46,9 +46,18 @@ def test_top_movies(client):
 
 
 def _login(client, sub="alice", name="Alice", email="alice@test.com"):
+    """Returns just user_id for callers that don't need the token."""
+    return _login_full(client, sub, name, email)["user_id"]
+
+
+def _login_full(client, sub="alice", name="Alice", email="alice@test.com"):
+    """Returns the full login response — user_id + session_token."""
     r = client.post("/auth/login", json={"id_token": f"sub_{sub}|{name}|{email}"})
     assert r.status_code == 200, r.text
-    return r.json()["user_id"]
+    body = r.json()
+    assert "session_token" in body and len(body["session_token"]) >= 32
+    assert "expires_at" in body and body["expires_at"] > 0
+    return body
 
 
 def test_login_creates_user_and_persists(client):
@@ -58,13 +67,40 @@ def test_login_creates_user_and_persists(client):
     assert r.json()["name"] == "Alice"
 
 
+def test_login_returns_secure_session_token(client):
+    """Tokens must be opaque urlsafe random — not deterministic."""
+    a = _login_full(client, sub="a", name="A", email="a@x.com")["session_token"]
+    b = _login_full(client, sub="b", name="B", email="b@x.com")["session_token"]
+    assert a != b
+    # Old impl was sha256 hex (64 chars, [0-9a-f]) — new impl is base64url.
+    assert any(c in a for c in "-_") or any(c.isupper() for c in a), \
+        "looks like the old sha256 token format — should be secrets.token_urlsafe"
+
+
+def test_username_claim_requires_session(client):
+    # No token → 401
+    r = client.post("/auth/username", json={"username": "alice"})
+    assert r.status_code == 401
+    # Garbage token → 401
+    r = client.post(
+        "/auth/username",
+        params={"session_token": "not-a-real-token"},
+        json={"username": "alice"},
+    )
+    assert r.status_code == 401
+
+
 def test_username_claim_flow(client):
-    _login(client)
+    token = _login_full(client)["session_token"]
     # Available?
     r = client.get("/auth/username/check/alice")
     assert r.status_code == 200 and r.json()["available"] is True
-    # Claim
-    r = client.post("/auth/username", json={"username": "alice"})
+    # Claim with real session token
+    r = client.post(
+        "/auth/username",
+        params={"session_token": token},
+        json={"username": "alice"},
+    )
     assert r.status_code == 200 and r.json()["ok"] is True
     # Lookup by username
     r = client.get("/users/by-username/alice")
@@ -72,6 +108,32 @@ def test_username_claim_flow(client):
     # Now unavailable for someone else
     r = client.get("/auth/username/check/alice")
     assert r.json()["available"] is False
+
+
+def test_logout_revokes_session(client):
+    token = _login_full(client)["session_token"]
+    # Token works initially
+    r = client.post(
+        "/auth/username",
+        params={"session_token": token},
+        json={"username": "alice"},
+    )
+    assert r.status_code == 200
+    # Log out
+    r = client.post("/auth/logout", params={"session_token": token})
+    assert r.status_code == 200 and r.json() == {"ok": True, "revoked": True}
+    # Same token now rejected
+    r = client.post(
+        "/auth/username",
+        params={"session_token": token},
+        json={"username": "alicia"},
+    )
+    assert r.status_code == 401
+
+
+def test_logout_idempotent_on_unknown_token(client):
+    r = client.post("/auth/logout", params={"session_token": "never-existed"})
+    assert r.status_code == 200 and r.json() == {"ok": True, "revoked": False}
 
 
 def test_username_validation_rejects_bad_input(client):
