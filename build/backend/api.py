@@ -18,18 +18,32 @@ to wipe back to seeded fixtures.
 """
 
 import os
+import time
+import uuid
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+import structlog
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from sqlalchemy import select, func, or_, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from db import get_db, init_db, SessionLocal
+from logging_config import configure_logging, get_logger, init_sentry
 from models import FollowRow, MovieRow, RankingRow, ReviewRow, UserRow
 from rated_backend import App, Movie
+
+# Configure logging + Sentry as early as possible — before FastAPI imports
+# anything else that might log.
+configure_logging()
+init_sentry()
+log = get_logger("api")
 
 
 # OpenAPI tag descriptions show up as section headers in /docs and /redoc.
@@ -65,6 +79,45 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ─── Rate limiting ───────────────────────────────────────────────────────────
+# slowapi is in-process — fine for a single uvicorn worker. For multi-worker
+# Postgres-backed deploys, swap the storage backend to redis://. The keys are
+# the client IP (or X-Forwarded-For when behind a proxy).
+limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# ─── Request logging + per-request request_id ────────────────────────────────
+# Every request gets a uuid bound into structlog's contextvars so all log lines
+# emitted during the request carry it. Returned as X-Request-Id so clients can
+# include it in bug reports.
+@app.middleware("http")
+async def _request_context(request: Request, call_next):
+    rid = request.headers.get("x-request-id") or str(uuid.uuid4())
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(
+        request_id=rid,
+        method=request.method,
+        path=request.url.path,
+    )
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        log.exception("request.unhandled_exception")
+        raise
+    duration_ms = round((time.perf_counter() - start) * 1000, 1)
+    log.info(
+        "request.completed",
+        status=response.status_code,
+        duration_ms=duration_ms,
+    )
+    response.headers["x-request-id"] = rid
+    return response
+
 
 # Service singletons. Stateless — each method takes a Session.
 app_instance = App()
@@ -316,7 +369,8 @@ def list_movie_rankings(
 # ─── Auth ────────────────────────────────────────────────────────────────────
 
 @app.post("/auth/login", tags=["Auth"])
-def login(req: LoginRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")  # login is cheap to brute-force; cap aggressively
+def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)):
     """Exchange an id_token for a session_token.
 
     When GOOGLE_CLIENT_ID env var is set, id_token must be a real Google JWT
@@ -342,7 +396,8 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/auth/logout", tags=["Auth"])
-def logout(session_token: str = "", db: Session = Depends(get_db)):
+@limiter.limit("30/minute")
+def logout(request: Request, session_token: str = "", db: Session = Depends(get_db)):
     """Invalidate the given session token. Idempotent — returns ok even if
     the token was already gone or never existed."""
     revoked = app_instance.auth.revoke_session(db, session_token) if session_token else False
@@ -360,7 +415,9 @@ def check_username(username: str, db: Session = Depends(get_db)):
 
 
 @app.post("/auth/username", tags=["Auth"])
+@limiter.limit("20/minute")  # username squat-prevention
 def claim_username(
+    request: Request,
     body: UsernameClaimRequest,
     session_token: str = "",
     db: Session = Depends(get_db),
