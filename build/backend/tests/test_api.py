@@ -318,6 +318,100 @@ def test_followers_404_for_unknown_user(client):
     assert client.get("/users/no-such-user/following").status_code == 404
 
 
+# ─── TMDB proxy ──────────────────────────────────────────────────────────────
+
+
+def test_tmdb_unconfigured_returns_503(client, monkeypatch):
+    """No TMDB_API_KEY → endpoints return 503 with a useful message rather
+    than confusing 500s. Cache-stats endpoint stays callable to confirm."""
+    monkeypatch.delenv("TMDB_API_KEY", raising=False)
+    r = client.get("/tmdb/popular")
+    assert r.status_code == 503
+    assert "TMDB_API_KEY" in r.json()["detail"]
+
+    stats = client.get("/tmdb/cache-stats").json()
+    assert stats["configured"] is False
+
+
+def test_tmdb_popular_with_mocked_fetch(client, monkeypatch):
+    """When configured, /tmdb/popular hands TMDB's body straight through."""
+    monkeypatch.setenv("TMDB_API_KEY", "test-key")
+    import tmdb as tmdb_module
+
+    async def fake_fetch(path, params=None, ttl=None):
+        assert path == "/movie/popular"
+        assert params == {"page": 1}
+        return {"page": 1, "results": [{"id": 42, "title": "Mocked Movie"}]}
+
+    monkeypatch.setattr(tmdb_module, "fetch", fake_fetch)
+
+    r = client.get("/tmdb/popular")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["page"] == 1
+    assert body["results"][0]["title"] == "Mocked Movie"
+
+
+def test_tmdb_search_requires_q(client, monkeypatch):
+    monkeypatch.setenv("TMDB_API_KEY", "test-key")
+    r = client.get("/tmdb/search", params={"q": ""})
+    assert r.status_code == 400
+    assert "non-empty" in r.json()["detail"]
+
+
+def test_tmdb_search_passes_query_through(client, monkeypatch):
+    monkeypatch.setenv("TMDB_API_KEY", "test-key")
+    import tmdb as tmdb_module
+
+    seen = {}
+    async def fake_fetch(path, params=None, ttl=None):
+        seen["path"] = path
+        seen["params"] = params
+        return {"page": 1, "results": []}
+    monkeypatch.setattr(tmdb_module, "fetch", fake_fetch)
+
+    client.get("/tmdb/search", params={"q": "interstellar", "page": 2})
+    assert seen["path"] == "/search/movie"
+    assert seen["params"] == {"query": "interstellar", "page": 2}
+
+
+def test_tmdb_movie_detail_uses_long_ttl(client, monkeypatch):
+    """Single-movie /tmdb/movie/{id} should pass the 1-hour TTL down."""
+    monkeypatch.setenv("TMDB_API_KEY", "test-key")
+    import tmdb as tmdb_module
+
+    seen_ttl = {}
+    async def fake_fetch(path, params=None, ttl=None):
+        seen_ttl["ttl"] = ttl
+        return {"id": 42, "title": "x"}
+    monkeypatch.setattr(tmdb_module, "fetch", fake_fetch)
+
+    client.get("/tmdb/movie/42")
+    assert seen_ttl["ttl"] == tmdb_module.TMDB_DETAIL_TTL  # 3600
+
+
+def test_tmdb_upstream_errors_propagate(client, monkeypatch):
+    """If TMDB itself returns 404, we return 404 with TMDB's error body."""
+    monkeypatch.setenv("TMDB_API_KEY", "test-key")
+    import tmdb as tmdb_module
+    import httpx
+
+    async def fake_fetch(path, params=None, ttl=None):
+        # Fabricate a 404 response object the way httpx would.
+        req = httpx.Request("GET", "https://api.themoviedb.org" + path)
+        resp = httpx.Response(404,
+                              json={"status_message": "The resource you requested could not be found."},
+                              request=req)
+        raise httpx.HTTPStatusError("404 Not Found", request=req, response=resp)
+
+    monkeypatch.setattr(tmdb_module, "fetch", fake_fetch)
+    r = client.get("/tmdb/movie/999999")
+    assert r.status_code == 404
+    detail = r.json()["detail"]
+    # detail is forwarded as the TMDB JSON body
+    assert isinstance(detail, dict) and "status_message" in detail
+
+
 # ─── Pagination ──────────────────────────────────────────────────────────────
 
 

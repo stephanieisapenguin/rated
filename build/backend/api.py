@@ -27,9 +27,12 @@ from sqlalchemy import select, func, or_, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+import httpx
+
 from db import get_db, init_db, SessionLocal
 from models import FollowRow, MovieRow, RankingRow, ReviewRow, UserRow
 from rated_backend import App, Movie
+import tmdb
 
 
 # OpenAPI tag descriptions show up as section headers in /docs and /redoc.
@@ -43,6 +46,7 @@ TAGS = [
     {"name": "Saved",     "description": "Bookmarks."},
     {"name": "Reviews",   "description": "Written reviews. One per (user, movie)."},
     {"name": "Feed",      "description": "Activity from followed users."},
+    {"name": "TMDB",      "description": "Cached proxy to The Movie Database. Frontend should call these instead of api.themoviedb.org so the API key stays server-side."},
 ]
 
 
@@ -597,3 +601,70 @@ def get_user_reviews(user_id: str, limit: int = 50, offset: int = 0,
     return [r.to_dict() for r in app_instance.review_service.get_for_user(
         db, user_id, limit=lim, offset=off,
     )]
+
+
+# ─── TMDB proxy ──────────────────────────────────────────────────────────────
+# All routes return TMDB's response body verbatim — pagination, fields, error
+# shapes are TMDB's. We add caching + hide the API key. Frontend swaps direct
+# `api.themoviedb.org` calls for these.
+
+def _tmdb_unconfigured():
+    return HTTPException(
+        status_code=503,
+        detail="TMDB_API_KEY is not configured on the backend",
+    )
+
+
+async def _proxy_tmdb(path: str, params: Optional[dict] = None,
+                     ttl: int = tmdb.TMDB_LIST_TTL):
+    if not tmdb.is_configured():
+        raise _tmdb_unconfigured()
+    try:
+        return await tmdb.fetch(path, params=params, ttl=ttl)
+    except httpx.HTTPStatusError as e:
+        # Pass TMDB's error body through with the original status so the
+        # frontend can react (404 → "movie not found", etc.).
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=e.response.json() if e.response.headers.get("content-type", "").startswith("application/json") else e.response.text,
+        )
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"TMDB upstream error: {e}")
+
+
+@app.get("/tmdb/popular", tags=["TMDB"])
+async def tmdb_popular(page: int = 1):
+    return await _proxy_tmdb("/movie/popular", {"page": page})
+
+
+@app.get("/tmdb/upcoming", tags=["TMDB"])
+async def tmdb_upcoming(page: int = 1):
+    return await _proxy_tmdb("/movie/upcoming", {"page": page})
+
+
+@app.get("/tmdb/top-rated", tags=["TMDB"])
+async def tmdb_top_rated(page: int = 1):
+    return await _proxy_tmdb("/movie/top_rated", {"page": page})
+
+
+@app.get("/tmdb/search", tags=["TMDB"])
+async def tmdb_search(q: str, page: int = 1):
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="?q= must be non-empty")
+    return await _proxy_tmdb("/search/movie", {"query": q, "page": page})
+
+
+@app.get("/tmdb/movie/{tmdb_id}", tags=["TMDB"])
+async def tmdb_movie(tmdb_id: int):
+    return await _proxy_tmdb(f"/movie/{tmdb_id}", ttl=tmdb.TMDB_DETAIL_TTL)
+
+
+@app.get("/tmdb/cache-stats", tags=["TMDB"])
+def tmdb_cache_stats():
+    """Tiny observability hook — how many distinct paths are cached + whether
+    the API key is configured at all. Useful when the frontend's TMDB calls
+    are silently falling back to mock data."""
+    return {
+        "cache_entries": tmdb.cache_size(),
+        "configured":    tmdb.is_configured(),
+    }

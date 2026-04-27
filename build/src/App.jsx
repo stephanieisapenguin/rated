@@ -65,28 +65,59 @@ const API = {
 const TMDB = "https://image.tmdb.org/t/p";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TMDB API client — fetches real popular/upcoming/top-rated films and search.
-// Replace TMDB_API_KEY below with a real key from themoviedb.org (Settings → API).
-// When the key is a placeholder, TMDB_ENABLED is false and all calls fall back
-// to the hardcoded MOVIES/UPCOMING arrays below (zero breakage, nothing to config).
+// TMDB client — calls our backend's /tmdb/* proxy instead of api.themoviedb.org
+// directly. Two wins:
+//   - the API key stays server-side (it used to ship in the bundle, visible
+//     in DevTools)
+//   - the backend caches across users, so popular/upcoming refreshes once per
+//     10 minutes total, not once per user
+// The frontend keeps a small per-tab cache anyway so re-rendering screens
+// doesn't refetch on every nav.
 // ─────────────────────────────────────────────────────────────────────────────
-const TMDB_API_KEY = import.meta.env.VITE_TMDB_API_KEY || "YOUR_TMDB_KEY_HERE";
-const TMDB_API_BASE = "https://api.themoviedb.org/3";
-const TMDB_ENABLED = TMDB_API_KEY && TMDB_API_KEY !== "YOUR_TMDB_KEY_HERE" && TMDB_API_KEY.length > 10;
 
-// Module-level cache keyed by URL path. Lists get a 10-minute TTL, individual
-// movie details are cached indefinitely since they don't meaningfully change.
+// Optimistic — assume backend has TMDB_API_KEY set. If it doesn't, calls
+// silently return null and the app falls back to hardcoded movies/upcoming.
+const TMDB_ENABLED = true;
+
 const TMDB_CACHE = new Map(); // key -> {data, expiresAt}
 const TMDB_LIST_TTL = 10 * 60 * 1000;
 
+// Translate a TMDB path (the way the rest of this file writes it) to the
+// backend's curated /tmdb/* route. Centralizing this means callers don't
+// need to know the backend exists.
+function tmdbPathToBackend(path) {
+  // Strip query string for routing decisions; we'll re-attach below.
+  const [bare, ...qsParts] = path.split("?");
+  const qs = qsParts.join("?");
+  // /movie/popular, /movie/upcoming, /movie/top_rated → /tmdb/popular etc.
+  if (bare === "/movie/popular")    return `/tmdb/popular${qs ? "?" + qs : ""}`;
+  if (bare === "/movie/upcoming")   return `/tmdb/upcoming${qs ? "?" + qs : ""}`;
+  if (bare === "/movie/top_rated")  return `/tmdb/top-rated${qs ? "?" + qs : ""}`;
+  // /search/movie?query=X → /tmdb/search?q=X (backend renames the param)
+  if (bare === "/search/movie") {
+    const params = new URLSearchParams(qs);
+    const q = params.get("query") || "";
+    const page = params.get("page") || "1";
+    return `/tmdb/search?q=${encodeURIComponent(q)}&page=${page}`;
+  }
+  // /movie/{id} → /tmdb/movie/{id}. Drop append_to_response — backend always
+  // returns the bare detail; if we need credits/videos later, broaden the
+  // backend route to forward them.
+  const movieMatch = bare.match(/^\/movie\/(\d+)$/);
+  if (movieMatch) return `/tmdb/movie/${movieMatch[1]}`;
+  // No backend route for /genre/movie/list — the frontend uses TMDB_GENRES
+  // (hardcoded below) instead.
+  return null;
+}
+
 async function tmdbFetch(path, { ttl = TMDB_LIST_TTL } = {}) {
-  if (!TMDB_ENABLED) return null;
+  const backendPath = tmdbPathToBackend(path);
+  if (!backendPath) return null; // unmapped paths (e.g. /genre/movie/list)
   const cached = TMDB_CACHE.get(path);
   if (cached && (cached.expiresAt === 0 || cached.expiresAt > Date.now())) return cached.data;
   try {
-    const sep = path.includes("?") ? "&" : "?";
-    const res = await fetch(`${TMDB_API_BASE}${path}${sep}api_key=${TMDB_API_KEY}`);
-    if (!res.ok) throw new Error(`TMDB ${res.status}`);
+    const res = await fetch(`${API_BASE}${backendPath}`);
+    if (!res.ok) throw new Error(`TMDB-proxy ${res.status}`);
     const data = await res.json();
     TMDB_CACHE.set(path, { data, expiresAt: ttl === 0 ? 0 : Date.now() + ttl });
     return data;
@@ -96,13 +127,17 @@ async function tmdbFetch(path, { ttl = TMDB_LIST_TTL } = {}) {
   }
 }
 
-// TMDB genre id → name mapping (cached on first fetch, rarely changes)
-let TMDB_GENRES = null;
+// TMDB's genre IDs are stable and the list barely changes. Hardcoded so we
+// don't need a backend round-trip just to map id → name. Refreshed manually
+// when TMDB adds a new genre (last update: 2024).
+const TMDB_GENRES = {
+  28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy",
+  80: "Crime", 99: "Documentary", 18: "Drama", 10751: "Family",
+  14: "Fantasy", 36: "History", 27: "Horror", 10402: "Music",
+  9648: "Mystery", 10749: "Romance", 878: "Science Fiction",
+  10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western",
+};
 async function getTmdbGenres() {
-  if (TMDB_GENRES) return TMDB_GENRES;
-  const data = await tmdbFetch("/genre/movie/list", { ttl: 0 });
-  if (!data?.genres) return {};
-  TMDB_GENRES = Object.fromEntries(data.genres.map(g => [g.id, g.name]));
   return TMDB_GENRES;
 }
 

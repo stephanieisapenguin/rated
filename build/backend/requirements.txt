@@ -5,3 +5,4 @@ SQLAlchemy==2.0.36
 google-auth==2.36.0
 alembic==1.13.3
 psycopg[binary]==3.2.3   # only used when DATABASE_URL points at Postgres
+httpx==0.28.1            # outbound HTTP client for TMDB proxy
