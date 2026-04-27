@@ -26,6 +26,15 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 _DEFAULT_SQLITE = f"sqlite:///{Path(__file__).parent / 'rated.db'}"
 DATABASE_URL = os.environ.get("DATABASE_URL") or _DEFAULT_SQLITE
 
+# SQLAlchemy 2.0 still resolves bare "postgresql://" to the legacy psycopg2
+# driver. We ship psycopg (v3) instead, since psycopg2 is on life support.
+# Auto-rewrite so users can paste any Postgres URL from Neon / Replit DB /
+# Netlify DB / etc. without thinking about driver prefixes.
+if DATABASE_URL.startswith("postgresql://") and not DATABASE_URL.startswith("postgresql+"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+elif DATABASE_URL.startswith("postgres://"):  # heroku-style alias
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+
 # SQLite needs check_same_thread=False because FastAPI may call sessions from
 # different threads. Postgres ignores connect_args.
 _connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
