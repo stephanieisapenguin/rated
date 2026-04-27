@@ -39,7 +39,19 @@ elif DATABASE_URL.startswith("postgres://"):  # heroku-style alias
 # different threads. Postgres ignores connect_args.
 _connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 
-engine = create_engine(DATABASE_URL, connect_args=_connect_args, future=True)
+# pool_pre_ping issues a cheap SELECT 1 before handing out a pooled connection,
+# so connections killed server-side (Replit Autoscale sleeps the container and
+# Postgres reaps idle conns) are silently replaced instead of bubbling up as
+# "SSL connection has been closed unexpectedly".
+# pool_recycle forces a fresh connection if one's been sitting idle for >5 min,
+# below most server-side reaper thresholds.
+engine = create_engine(
+    DATABASE_URL,
+    connect_args=_connect_args,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    future=True,
+)
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
