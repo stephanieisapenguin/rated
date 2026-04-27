@@ -8,6 +8,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 
 // API_BASE points to your backend. Set VITE_API_BASE_URL in .env for local dev
 // (defaults to localhost:8000) or in Netlify's Environment Variables for production.
+// Production currently points to the Replit Autoscale deployment.
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 // API.call() returns the parsed JSON response, or null if the server is unreachable.
