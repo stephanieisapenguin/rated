@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { W, setActiveTheme, setTypeScale } from "./theme";
+import { LoginScreen } from "./screens/LoginScreen";
+import { AlreadyRankedFallback } from "./screens/AlreadyRankedFallback";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // API LAYER
@@ -291,39 +294,9 @@ async function findMovieAsync(id, title) {
   return base;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// THEMING — W is a live proxy. Reading W.bg returns the active theme's bg.
-// App.setTheme() flips ACTIVE_THEME and forces re-render.
-// ─────────────────────────────────────────────────────────────────────────────
-const DARK_THEME = {
-  bg:"#0f0f13", card:"#1a1a22", border:"#2c2c3a",
-  text:"#ededf2", dim:"#6e6e82",
-  accent:"#ff3b3b", accentDim:"#ff3b3b28",
-  green:"#10b981", greenDim:"#10b98122",
-  gold:"#eab308", goldDim:"#eab30822",
-  blue:"#3b82f6", blueDim:"#3b82f622",
-  purple:"#a855f7", purpleDim:"#a855f722",
-  orange:"#f97316", orangeDim:"#f9731622",
-};
-const LIGHT_THEME = {
-  bg:"#f7f7fa", card:"#ffffff", border:"#e5e5ec",
-  text:"#18181e", dim:"#6e6e82",
-  accent:"#e5252f", accentDim:"#e5252f18",
-  green:"#059669", greenDim:"#05966918",
-  gold:"#ca8a04", goldDim:"#ca8a0418",
-  blue:"#2563eb", blueDim:"#2563eb18",
-  purple:"#9333ea", purpleDim:"#9333ea18",
-  orange:"#ea580c", orangeDim:"#ea580c18",
-};
-// Active palette — mutated by App shell when user toggles theme
-let ACTIVE_THEME = DARK_THEME;
-const setActiveTheme = (t) => { ACTIVE_THEME = t==="light" ? LIGHT_THEME : DARK_THEME; };
-// W is a Proxy — reads go to the current ACTIVE_THEME
-const W = new Proxy({}, { get: (_, prop) => ACTIVE_THEME[prop] });
-
-// Dynamic type — user-adjustable font scale (0.9=small, 1.0=normal, 1.15=large, 1.3=extra-large)
-let TYPE_SCALE = 1.0;
-const setTypeScale = (s) => { TYPE_SCALE = s; };
+// THEMING — W, setActiveTheme, setTypeScale are imported from ./theme so the
+// extracted screen components can read the live palette without prop-drilling.
+// See ./theme.js for the Proxy + mutation pattern.
 
 const MOVIES = [
   { id:"m-001", title:"Interstellar", release_year:2014, runtime_minutes:169, content_rating:"PG-13",
@@ -1567,25 +1540,7 @@ const ReportBlockMenu = ({ targetType, targetId, targetLabel, targetUser, onRepo
 // LOGIN SCREEN
 // ─────────────────────────────────────────────────────────────────────────────
 
-const LoginScreen = ({ onLogin }) => (
-  <div style={{height:"100%",display:"flex",flexDirection:"column",justifyContent:"center",padding:"0 28px"}}>
-    <div style={{textAlign:"center",marginBottom:40}}>
-      <div style={{fontSize:42,fontWeight:900,color:W.accent,fontFamily:"monospace",letterSpacing:-2}}>RATED</div>
-      <div style={{fontSize:10,color:W.dim,marginTop:8,fontFamily:"monospace",letterSpacing:3}}>YOUR TASTE. RANKED.</div>
-    </div>
-    <div onClick={()=>onLogin("apple")} style={{display:"flex",alignItems:"center",justifyContent:"center",gap:10,background:"#fff",borderRadius:12,padding:"13px 20px",cursor:"pointer",marginBottom:10}}>
-      <span style={{fontSize:18,color:"#000"}}></span>
-      <span style={{fontSize:13,fontWeight:600,color:"#000"}}>Continue with Apple</span>
-    </div>
-    <div onClick={()=>onLogin("google")} style={{display:"flex",alignItems:"center",justifyContent:"center",gap:10,background:W.card,border:`1px solid ${W.border}`,borderRadius:12,padding:"13px 20px",cursor:"pointer"}}>
-      <svg width="16" height="16" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
-      <span style={{fontSize:13,fontWeight:600,color:W.text}}>Continue with Google</span>
-    </div>
-    <div style={{textAlign:"center",marginTop:28}}>
-      <div style={{fontSize:9,color:W.dim,fontFamily:"monospace",lineHeight:1.6}}>By continuing you agree to Rated's <span style={{color:W.accent}}>Terms</span> & <span style={{color:W.accent}}>Privacy</span></div>
-    </div>
-  </div>
-);
+// LoginScreen lives in ./screens/LoginScreen — see import at top of file.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // USERNAME SCREEN — checks server for availability, falls back to local set
@@ -4649,20 +4604,7 @@ class ErrorBoundary extends React.Component {
 // APP SHELL
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Small helper shown when rank screen is opened for a film that's already ranked.
-// Flips navigation state inside useEffect instead of during render (avoids React warning).
-const AlreadyRankedFallback = ({ onDone }) => {
-  useEffect(()=>{
-    const t = setTimeout(onDone, 400);
-    return ()=>clearTimeout(t);
-  },[onDone]);
-  return (
-    <div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:8}}>
-      <div style={{fontSize:24}}>✓</div>
-      <div style={{fontSize:11,color:W.green,fontFamily:"monospace"}}>Already ranked!</div>
-    </div>
-  );
-};
+// AlreadyRankedFallback lives in ./screens/AlreadyRankedFallback — see import at top of file.
 
 function AppInner() {
   const [authState,setAuthState]=useState("logged-out");
