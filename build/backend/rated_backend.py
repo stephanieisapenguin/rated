@@ -19,8 +19,9 @@ The App() class at the bottom wires everything together so callers can do
 
 from __future__ import annotations
 
-import hashlib
+import os
 import re
+import secrets
 import time
 import uuid
 from typing import Optional
@@ -30,8 +31,12 @@ from sqlalchemy.orm import Session
 
 from models import (
     UserRow, MovieRow, RankingRow, PairwiseRow,
-    WatchlistRow, SavedRow, ReviewRow, FollowRow,
+    WatchlistRow, SavedRow, ReviewRow, FollowRow, SessionRow,
 )
+
+
+# Session lifetime — 30 days unless overridden.
+SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", 30 * 24 * 3600))
 
 
 # ─── Convenience factories ────────────────────────────────────────────────────
@@ -53,20 +58,28 @@ _RESERVED_USERNAMES = {"admin", "root", "rated", "support", "help", "api", "www"
 
 class AuthService:
     """
-    Google OAuth stub. Real implementation: validate id_token via google-auth,
-    extract sub/email/name from JWT claims. Stub: parse fake "sub|name|email".
+    Google OAuth: when GOOGLE_CLIENT_ID env var is set, treats id_token as a
+    real Google JWT and verifies the signature + audience via google-auth.
+    Otherwise falls back to the dev-stub format "sub|name|email" so local
+    development and tests don't need a Google client set up.
     """
 
     def google_login(self, db: Session, id_token: str) -> UserRow:
-        try:
-            sub, name, email = id_token.split("|")
-        except ValueError:
-            raise ValueError("Invalid id_token format")
+        client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+        if client_id:
+            sub, name, email = self._verify_google_jwt(id_token, client_id)
+        else:
+            sub, name, email = self._parse_stub(id_token)
 
         existing = db.execute(
             select(UserRow).where(UserRow.google_sub == sub)
         ).scalar_one_or_none()
         if existing:
+            # Refresh name/email in case Google profile changed.
+            existing.name = name or existing.name
+            existing.email = email or existing.email
+            db.commit()
+            db.refresh(existing)
             return existing
 
         user = UserRow(
@@ -81,9 +94,69 @@ class AuthService:
         return user
 
     @staticmethod
-    def generate_session_token(user: UserRow) -> str:
-        raw = f"{user.user_id}:{time.time()}"
-        return hashlib.sha256(raw.encode()).hexdigest()
+    def _parse_stub(id_token: str) -> tuple[str, str, str]:
+        try:
+            sub, name, email = id_token.split("|")
+        except ValueError:
+            raise ValueError("Invalid id_token format (expected 'sub|name|email')")
+        return sub, name, email
+
+    @staticmethod
+    def _verify_google_jwt(id_token_str: str, client_id: str) -> tuple[str, str, str]:
+        # Imported lazily so dev/test installs without google-auth still work.
+        try:
+            from google.oauth2 import id_token as g_id_token
+            from google.auth.transport import requests as g_requests
+        except ImportError as e:
+            raise ValueError(f"google-auth not installed: {e}")
+        try:
+            claims = g_id_token.verify_oauth2_token(
+                id_token_str, g_requests.Request(), client_id,
+            )
+        except ValueError as e:
+            raise ValueError(f"Invalid Google id_token: {e}")
+        sub = claims.get("sub")
+        if not sub:
+            raise ValueError("Google JWT missing required 'sub' claim")
+        return sub, claims.get("name") or "", claims.get("email") or ""
+
+    # ─── Sessions ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def create_session(db: Session, user: UserRow) -> SessionRow:
+        """Mint a fresh opaque token and persist it. 256 bits of randomness via
+        secrets.token_urlsafe — long enough to be infeasible to guess. Replaces
+        the old deterministic sha256(user_id+timestamp) scheme."""
+        row = SessionRow(
+            token=secrets.token_urlsafe(32),
+            user_id=user.user_id,
+            expires_at=time.time() + SESSION_TTL_SECONDS,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return row
+
+    @staticmethod
+    def get_user_from_session(db: Session, token: Optional[str]) -> Optional[UserRow]:
+        """Look up the session, validate not-expired, return the user. None if
+        token missing/unknown/expired."""
+        if not token:
+            return None
+        row = db.get(SessionRow, token)
+        if not row:
+            return None
+        if row.expires_at < time.time():
+            db.delete(row)
+            db.commit()
+            return None
+        return db.get(UserRow, row.user_id)
+
+    @staticmethod
+    def revoke_session(db: Session, token: str) -> bool:
+        result = db.execute(delete(SessionRow).where(SessionRow.token == token))
+        db.commit()
+        return result.rowcount > 0
 
     # ─── Username claim flow ─────────────────────────────────────────────────
 
@@ -140,11 +213,13 @@ class RankingService:
         db.refresh(row)
         return row
 
-    def user_rankings(self, db: Session, user_id: str) -> list[RankingRow]:
+    def user_rankings(self, db: Session, user_id: str,
+                      limit: int = 50, offset: int = 0) -> list[RankingRow]:
         return list(db.execute(
             select(RankingRow)
             .where(RankingRow.user_id == user_id)
             .order_by(RankingRow.score.desc())
+            .offset(offset).limit(limit)
         ).scalars())
 
     def average_score(self, db: Session, movie_id: str) -> float:
@@ -214,7 +289,8 @@ class FeedService:
             .where(FollowRow.follower_id == user_id)
         ).scalar() or 0
 
-    def get_feed(self, db: Session, user_id: str, limit: int = 20) -> list[RankingRow]:
+    def get_feed(self, db: Session, user_id: str,
+                 limit: int = 20, offset: int = 0) -> list[RankingRow]:
         if not db.get(UserRow, user_id):
             raise ValueError(f"User {user_id} not found")
         followee_ids = [r[0] for r in db.execute(
@@ -226,7 +302,7 @@ class FeedService:
             select(RankingRow)
             .where(RankingRow.user_id.in_(followee_ids))
             .order_by(RankingRow.ranked_at.desc())
-            .limit(limit)
+            .offset(offset).limit(limit)
         ).scalars())
 
 
@@ -259,11 +335,13 @@ class WatchlistService:
         )
         db.commit()
 
-    def get(self, db: Session, user_id: str) -> list[str]:
+    def get(self, db: Session, user_id: str,
+            limit: int = 50, offset: int = 0) -> list[str]:
         rows = db.execute(
             select(WatchlistRow.movie_id)
             .where(WatchlistRow.user_id == user_id)
             .order_by(WatchlistRow.added_at.desc())
+            .offset(offset).limit(limit)
         ).all()
         return [r[0] for r in rows]
 
@@ -294,11 +372,13 @@ class SavedMovieService:
         )
         db.commit()
 
-    def get(self, db: Session, user_id: str) -> list[str]:
+    def get(self, db: Session, user_id: str,
+            limit: int = 50, offset: int = 0) -> list[str]:
         rows = db.execute(
             select(SavedRow.movie_id)
             .where(SavedRow.user_id == user_id)
             .order_by(SavedRow.added_at.desc())
+            .offset(offset).limit(limit)
         ).all()
         return [r[0] for r in rows]
 
@@ -350,18 +430,22 @@ class ReviewService:
         db.commit()
         return result.rowcount > 0
 
-    def get_for_user(self, db: Session, user_id: str) -> list[ReviewRow]:
+    def get_for_user(self, db: Session, user_id: str,
+                     limit: int = 50, offset: int = 0) -> list[ReviewRow]:
         return list(db.execute(
             select(ReviewRow)
             .where(ReviewRow.user_id == user_id)
             .order_by(func.coalesce(ReviewRow.edited_at, ReviewRow.created_at).desc())
+            .offset(offset).limit(limit)
         ).scalars())
 
-    def get_for_movie(self, db: Session, movie_id: str) -> list[ReviewRow]:
+    def get_for_movie(self, db: Session, movie_id: str,
+                      limit: int = 50, offset: int = 0) -> list[ReviewRow]:
         return list(db.execute(
             select(ReviewRow)
             .where(ReviewRow.movie_id == movie_id)
             .order_by(func.coalesce(ReviewRow.edited_at, ReviewRow.created_at).desc())
+            .offset(offset).limit(limit)
         ).scalars())
 
 

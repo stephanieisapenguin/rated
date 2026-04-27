@@ -53,6 +53,6 @@ def init_db() -> None:
     # Import models so they register on Base.metadata before create_all.
     from models import (  # noqa: F401
         UserRow, MovieRow, RankingRow, PairwiseRow,
-        WatchlistRow, SavedRow, ReviewRow, FollowRow,
+        WatchlistRow, SavedRow, ReviewRow, FollowRow, SessionRow,
     )
     Base.metadata.create_all(bind=engine)
