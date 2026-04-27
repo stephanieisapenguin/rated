@@ -251,12 +251,16 @@ class RankingService:
 class FeedService:
     """follow, unfollow, get_feed, follower/following counts."""
 
-    def follow(self, db: Session, follower_id: str, followee_id: str) -> None:
+    def follow(self, db: Session, follower_id: str, followee_id: str) -> dict:
+        """Create a follow edge. Returns {state: "approved"|"pending"}.
+        - Public followee → state="approved", takes effect immediately.
+        - Private followee → state="pending", awaits the followee's approval.
+        Idempotent: re-following preserves whatever state the existing edge has."""
         if follower_id == followee_id:
             raise ValueError("Cannot follow yourself")
-        if not db.get(UserRow, follower_id) or not db.get(UserRow, followee_id):
+        followee = db.get(UserRow, followee_id)
+        if not db.get(UserRow, follower_id) or not followee:
             raise ValueError("User not found")
-        # No-op if already following.
         existing = db.execute(
             select(FollowRow).where(
                 FollowRow.follower_id == follower_id,
@@ -264,11 +268,15 @@ class FeedService:
             )
         ).scalar_one_or_none()
         if existing:
-            return
-        db.add(FollowRow(follower_id=follower_id, followee_id=followee_id))
+            return {"state": existing.state}
+        state = "pending" if followee.is_private else "approved"
+        db.add(FollowRow(follower_id=follower_id, followee_id=followee_id, state=state))
         db.commit()
+        return {"state": state}
 
     def unfollow(self, db: Session, follower_id: str, followee_id: str) -> None:
+        """Remove the edge regardless of state — works for both unfollow and
+        canceling-a-pending-request from the requester side."""
         db.execute(
             delete(FollowRow).where(
                 FollowRow.follower_id == follower_id,
@@ -278,23 +286,81 @@ class FeedService:
         db.commit()
 
     def follower_count(self, db: Session, user_id: str) -> int:
+        """Approved followers only — pending requests don't count toward the
+        public number on a profile."""
         return db.execute(
             select(func.count()).select_from(FollowRow)
-            .where(FollowRow.followee_id == user_id)
+            .where(FollowRow.followee_id == user_id, FollowRow.state == "approved")
         ).scalar() or 0
 
     def following_count(self, db: Session, user_id: str) -> int:
         return db.execute(
             select(func.count()).select_from(FollowRow)
-            .where(FollowRow.follower_id == user_id)
+            .where(FollowRow.follower_id == user_id, FollowRow.state == "approved")
         ).scalar() or 0
+
+    # ─── Follow-request approvals (for private accounts) ─────────────────
+
+    def list_pending_requests(self, db: Session, user_id: str) -> list[UserRow]:
+        """Users who've asked to follow {user_id} and are still pending.
+        Returned UserRow objects so the API can hand back full profile dicts."""
+        rows = db.execute(
+            select(UserRow)
+            .join(FollowRow, FollowRow.follower_id == UserRow.user_id)
+            .where(FollowRow.followee_id == user_id, FollowRow.state == "pending")
+            .order_by(FollowRow.created_at.desc())
+        ).scalars()
+        return list(rows)
+
+    def approve_request(self, db: Session, followee_id: str, follower_id: str) -> bool:
+        """Flip a pending edge to approved. Returns False if no pending edge exists."""
+        row = db.execute(
+            select(FollowRow).where(
+                FollowRow.follower_id == follower_id,
+                FollowRow.followee_id == followee_id,
+                FollowRow.state == "pending",
+            )
+        ).scalar_one_or_none()
+        if not row:
+            return False
+        row.state = "approved"
+        db.commit()
+        return True
+
+    def reject_request(self, db: Session, followee_id: str, follower_id: str) -> bool:
+        """Delete a pending edge. Returns False if no pending edge exists."""
+        result = db.execute(
+            delete(FollowRow).where(
+                FollowRow.follower_id == follower_id,
+                FollowRow.followee_id == followee_id,
+                FollowRow.state == "pending",
+            )
+        )
+        db.commit()
+        return result.rowcount > 0
+
+    def set_privacy(self, db: Session, user_id: str, is_private: bool) -> UserRow:
+        """Toggle a user's account privacy. Existing followers are kept
+        regardless — only future follow attempts route to pending."""
+        user = db.get(UserRow, user_id)
+        if not user:
+            raise ValueError(f"User {user_id} not found")
+        user.is_private = bool(is_private)
+        db.commit()
+        db.refresh(user)
+        return user
 
     def get_feed(self, db: Session, user_id: str,
                  limit: int = 20, offset: int = 0) -> list[RankingRow]:
         if not db.get(UserRow, user_id):
             raise ValueError(f"User {user_id} not found")
+        # Only follow edges that have been approved contribute to the feed —
+        # pending requests give the requester nothing to peek at.
         followee_ids = [r[0] for r in db.execute(
-            select(FollowRow.followee_id).where(FollowRow.follower_id == user_id)
+            select(FollowRow.followee_id).where(
+                FollowRow.follower_id == user_id,
+                FollowRow.state == "approved",
+            )
         )]
         if not followee_ids:
             return []

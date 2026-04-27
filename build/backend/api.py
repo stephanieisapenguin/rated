@@ -171,6 +171,9 @@ class ReviewSubmitRequest(BaseModel):
     rating: int
     text: str
 
+class PrivacyUpdateRequest(BaseModel):
+    is_private: bool
+
 
 # ─── Health ──────────────────────────────────────────────────────────────────
 
@@ -417,7 +420,7 @@ def _list_follow_edge(db: Session, user_id: str, *, side: str,
     rows = db.execute(
         select(UserRow)
         .join(FollowRow, join_col == UserRow.user_id)
-        .where(where_col == user_id)
+        .where(where_col == user_id, FollowRow.state == "approved")
         .order_by(FollowRow.created_at.desc())
         .offset(off).limit(lim)
     ).scalars()
@@ -497,16 +500,92 @@ def record_pairwise(user_id: str, body: PairwiseRequest, db: Session = Depends(g
 
 @app.post("/users/{user_id}/follow", tags=["Feed"])
 def follow(user_id: str, body: FollowRequest, db: Session = Depends(get_db)):
+    """Follow another user. If the followee is private, the response state is
+    "pending" and they must approve via /follow-requests; otherwise "approved"
+    and the follow takes effect immediately."""
     try:
-        app_instance.feed_service.follow(db, user_id, body.followee_id)
-        return {"ok": True}
+        result = app_instance.feed_service.follow(db, user_id, body.followee_id)
+        return {"ok": True, "state": result["state"]}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.delete("/users/{user_id}/follow/{followee_id}", tags=["Feed"])
 def unfollow(user_id: str, followee_id: str, db: Session = Depends(get_db)):
+    """Remove a follow edge. Works on approved follows (unfollow) and pending
+    ones (cancel-the-request from the requester side)."""
     app_instance.feed_service.unfollow(db, user_id, followee_id)
+    return {"ok": True}
+
+
+# ─── Privacy + follow-request approvals ──────────────────────────────────────
+
+def _require_self(db: Session, user_id: str, session_token: str) -> UserRow:
+    """Verify session_token resolves to a user, and that user_id matches.
+    Returns the user row or raises 401/403."""
+    user = app_instance.auth.get_user_from_session(db, session_token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not logged in")
+    if user.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Not allowed")
+    return user
+
+
+@app.post("/users/{user_id}/privacy", tags=["Users"])
+def set_privacy(
+    user_id: str,
+    body: PrivacyUpdateRequest,
+    session_token: str = "",
+    db: Session = Depends(get_db),
+):
+    """Toggle the user's account privacy. Requires the user's own session.
+    Existing followers are kept regardless — only future follow attempts on a
+    private account route to "pending"."""
+    _require_self(db, user_id, session_token)
+    try:
+        user = app_instance.feed_service.set_privacy(db, user_id, body.is_private)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"ok": True, "is_private": user.is_private}
+
+
+@app.get("/users/{user_id}/follow-requests", tags=["Users"])
+def list_follow_requests(
+    user_id: str,
+    session_token: str = "",
+    db: Session = Depends(get_db),
+):
+    """Pending follow requests on the current user's private account.
+    Self-only — only the user can see who's asking to follow them."""
+    _require_self(db, user_id, session_token)
+    return [u.to_dict() for u in app_instance.feed_service.list_pending_requests(db, user_id)]
+
+
+@app.post("/users/{user_id}/follow-requests/{follower_id}/approve", tags=["Users"])
+def approve_follow_request(
+    user_id: str,
+    follower_id: str,
+    session_token: str = "",
+    db: Session = Depends(get_db),
+):
+    _require_self(db, user_id, session_token)
+    if not app_instance.feed_service.approve_request(db, user_id, follower_id):
+        raise HTTPException(status_code=404, detail="No pending follow request from that user")
+    return {"ok": True, "state": "approved"}
+
+
+@app.delete("/users/{user_id}/follow-requests/{follower_id}", tags=["Users"])
+def reject_follow_request(
+    user_id: str,
+    follower_id: str,
+    session_token: str = "",
+    db: Session = Depends(get_db),
+):
+    """Reject a pending follow request — same effect as the requester
+    canceling, except initiated by the followee."""
+    _require_self(db, user_id, session_token)
+    if not app_instance.feed_service.reject_request(db, user_id, follower_id):
+        raise HTTPException(status_code=404, detail="No pending follow request from that user")
     return {"ok": True}
 
 

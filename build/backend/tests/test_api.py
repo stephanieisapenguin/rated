@@ -318,6 +318,139 @@ def test_followers_404_for_unknown_user(client):
     assert client.get("/users/no-such-user/following").status_code == 404
 
 
+# ─── Privacy + follow-request approvals ──────────────────────────────────────
+
+
+def test_default_user_is_public(client):
+    user_id = _login(client, sub="pub", name="Pub", email="p@x.com")
+    assert client.get(f"/users/{user_id}").json()["is_private"] is False
+
+
+def test_set_privacy_requires_own_session(client):
+    me = _login_full(client, sub="own", name="Own", email="o@x.com")
+    other = _login_full(client, sub="oth", name="Oth", email="z@x.com")
+
+    # No token → 401
+    r = client.post(f"/users/{me['user_id']}/privacy", json={"is_private": True})
+    assert r.status_code == 401
+
+    # Other user's token → 403
+    r = client.post(
+        f"/users/{me['user_id']}/privacy",
+        params={"session_token": other["session_token"]},
+        json={"is_private": True},
+    )
+    assert r.status_code == 403
+
+    # Own token → 200
+    r = client.post(
+        f"/users/{me['user_id']}/privacy",
+        params={"session_token": me["session_token"]},
+        json={"is_private": True},
+    )
+    assert r.status_code == 200 and r.json() == {"ok": True, "is_private": True}
+    assert client.get(f"/users/{me['user_id']}").json()["is_private"] is True
+
+
+def test_follow_a_public_user_is_immediate(client):
+    me_id = _login(client, sub="pubf", name="P", email="pf@x.com")
+    cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
+    r = client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "state": "approved"}
+    assert client.get(f"/users/{cine_id}").json()["follower_count"] == 1
+
+
+def test_follow_a_private_user_is_pending(client):
+    me = _login_full(client, sub="prv", name="P", email="prv@x.com")
+    me_id = me["user_id"]
+    target = _login_full(client, sub="target", name="T", email="t@x.com")
+    target_id = target["user_id"]
+
+    client.post(f"/users/{target_id}/privacy",
+                params={"session_token": target["session_token"]},
+                json={"is_private": True})
+
+    r = client.post(f"/users/{me_id}/follow", json={"followee_id": target_id})
+    assert r.json()["state"] == "pending"
+
+    # Counts unchanged: follower_count counts approved-only
+    assert client.get(f"/users/{target_id}").json()["follower_count"] == 0
+    assert client.get(f"/users/{me_id}").json()["following_count"] == 0
+
+    # Feed empty (pending follow doesn't surface anything)
+    assert client.get(f"/users/{me_id}/feed").json() == []
+
+    # T sees the pending request
+    requests = client.get(
+        f"/users/{target_id}/follow-requests",
+        params={"session_token": target["session_token"]},
+    ).json()
+    assert len(requests) == 1
+    assert requests[0]["user_id"] == me_id
+
+    # T approves
+    r = client.post(
+        f"/users/{target_id}/follow-requests/{me_id}/approve",
+        params={"session_token": target["session_token"]},
+    )
+    assert r.status_code == 200 and r.json()["state"] == "approved"
+
+    # Now counts include the edge
+    assert client.get(f"/users/{target_id}").json()["follower_count"] == 1
+    assert client.get(f"/users/{me_id}").json()["following_count"] == 1
+
+
+def test_reject_follow_request(client):
+    me_id = _login(client, sub="rej1", name="R1", email="r1@x.com")
+    target = _login_full(client, sub="rej2", name="R2", email="r2@x.com")
+    target_id = target["user_id"]
+
+    client.post(f"/users/{target_id}/privacy",
+                params={"session_token": target["session_token"]},
+                json={"is_private": True})
+    client.post(f"/users/{me_id}/follow", json={"followee_id": target_id})
+
+    r = client.delete(
+        f"/users/{target_id}/follow-requests/{me_id}",
+        params={"session_token": target["session_token"]},
+    )
+    assert r.status_code == 200
+
+    # Edge gone — re-following goes back to pending
+    assert client.get(
+        f"/users/{target_id}/follow-requests",
+        params={"session_token": target["session_token"]},
+    ).json() == []
+    r = client.post(f"/users/{me_id}/follow", json={"followee_id": target_id})
+    assert r.json()["state"] == "pending"
+
+
+def test_follow_requests_self_only(client):
+    target = _login_full(client, sub="solo", name="S", email="s@x.com")
+    target_id = target["user_id"]
+    other = _login_full(client, sub="nosy", name="N", email="n@x.com")
+
+    r = client.get(
+        f"/users/{target_id}/follow-requests",
+        params={"session_token": other["session_token"]},
+    )
+    assert r.status_code == 403
+
+
+def test_existing_followers_unaffected_by_going_private(client):
+    """Flipping is_private doesn't retroactively reset approved follows."""
+    me_id = _login(client, sub="kept", name="K", email="k@x.com")
+    target = _login_full(client, sub="keep", name="K2", email="k2@x.com")
+    target_id = target["user_id"]
+    client.post(f"/users/{me_id}/follow", json={"followee_id": target_id})
+    assert client.get(f"/users/{target_id}").json()["follower_count"] == 1
+    client.post(f"/users/{target_id}/privacy",
+                params={"session_token": target["session_token"]},
+                json={"is_private": True})
+    assert client.get(f"/users/{target_id}").json()["follower_count"] == 1
+
+
 # ─── Pagination ──────────────────────────────────────────────────────────────
 
 
