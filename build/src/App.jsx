@@ -5193,7 +5193,12 @@ function AppInner() {
       if(rankedIds.includes(rankMovie.id)){
         // Edge case — should rarely trigger since onReRank clears first.
         // Use a tiny inline component so the state-flip happens in useEffect, not during render.
-        return <AlreadyRankedFallback onDone={()=>{setScreen("detail");setRankMovie(null);}}/>;
+        // Mirror onRankCancel's fallback: only go to "detail" if a movie is selected,
+        // otherwise route home — "detail" with no selectedMovie renders a blank screen.
+        return <AlreadyRankedFallback onDone={()=>{
+          setRankMovie(null);
+          setScreen(selectedMovie ? "detail" : "home");
+        }}/>;
       }
       return <RankScreen newMovie={rankMovie} rankedIds={rankedIds} eloScores={eloScores} onComplete={onRankComplete} onCancel={onRankCancel} session={session} userId={userId}/>;
     }
