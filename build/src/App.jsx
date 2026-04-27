@@ -54,6 +54,7 @@ const API = {
   removeWatchlist: (uid, movie_id, token)          => api("DELETE",`/users/${uid}/watchlist/${movie_id}`, null, token),
   topMovies:       ()                              => api("GET",  "/movies/top"),
   movieStats:      (movie_id)                      => api("GET",  `/movies/${movie_id}/stats`),
+  searchUsers:     (q, limit=20)                   => api("GET",  `/users?q=${encodeURIComponent(q)}&limit=${limit}`),
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3667,14 +3668,48 @@ const SearchScreen = ({ onNav, onSelectMovie, onSelectUser, followingHandles=new
     : [];
   const showBrowse=browseGenre&&query.length<=1;
 
-  // User search — matches username or bio
-  const userResults = query.length>1 ? Object.entries(USER_PROFILES)
+  // User search — backend /users?q= for real DB users, USER_PROFILES for the
+  // hardcoded demo cohort. Backend results are debounced 250ms and merged on
+  // top of the local list, deduped by handle. When the API is offline the
+  // local list still shows so the screen never appears broken.
+  const [backendUsers, setBackendUsers] = useState([]);
+  useEffect(() => {
+    if (query.length <= 1 || searchTab !== "users") { setBackendUsers([]); return; }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      const rows = await API.searchUsers(query);
+      if (cancelled || !Array.isArray(rows)) return;
+      // Map backend shape → UI shape. Synthesize avatar from first letter of
+      // name; bio empty unless USER_PROFILES has one.
+      const mapped = rows.map(u => ({
+        handle: `@${u.username || u.user_id.slice(0,8)}`,
+        username: u.username || u.name,
+        avatar: (u.name || u.username || "?").trim()[0]?.toUpperCase() || "?",
+        bio: "",
+        movies_rated: 0,
+        followers: u.follower_count || 0,
+        isPrivate: false,
+        _backend: true,
+        _userId: u.user_id,
+      }));
+      setBackendUsers(mapped);
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [query, searchTab]);
+
+  const localUserResults = query.length>1 ? Object.entries(USER_PROFILES)
     .filter(([handle,p])=>
       handle.toLowerCase().includes(query.toLowerCase()) ||
       p.username.toLowerCase().includes(query.toLowerCase()) ||
       p.bio?.toLowerCase().includes(query.toLowerCase())
     )
     .map(([handle,p])=>({handle,...p})) : [];
+
+  // Merge: backend hits first, then any local mocks not already present.
+  const seenHandles = new Set(backendUsers.map(u => u.handle.toLowerCase()));
+  const userResults = query.length>1
+    ? [...backendUsers, ...localUserResults.filter(u => !seenHandles.has(u.handle.toLowerCase()))]
+    : [];
 
   // Suggested users — pick 5 on first render, preferring people not yet followed,
   // then lock the list. This way, tapping Follow keeps them visible (with the
