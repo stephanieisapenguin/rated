@@ -7,3 +7,4 @@ alembic==1.13.3
 psycopg[binary]==3.2.3   # only used when DATABASE_URL points at Postgres
 structlog==24.4.0        # JSON-shaped logs + per-request bound context
 slowapi==0.1.9           # in-process rate limiting
+httpx==0.28.1            # outbound HTTP client for TMDB proxy
