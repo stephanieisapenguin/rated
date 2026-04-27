@@ -38,9 +38,34 @@ OpenAPI docs auto-served at `http://localhost:8000/docs`.
 | `freeze`     | `pip freeze > requirements.lock` |
 | `db-reset`   | `rm -f rated.db` (next start re-seeds fixtures) |
 | `db-shell`   | Open `sqlite3` REPL on the dev DB |
+| `migrate`    | `alembic upgrade head` — apply pending migrations |
+| `migrate-down` | `alembic downgrade -1` — roll back one migration |
+| `migration`  | `make migration MSG="..."` — autogenerate from model diff |
 | `clean`      | Remove venv + caches |
 
 Override defaults: `make dev PORT=8001 HOST=127.0.0.1`.
+
+## Schema migrations (Alembic)
+
+Schema changes flow through Alembic. The `init_db()` call at startup still
+runs `Base.metadata.create_all()` for fast local dev (matches whatever
+models.py says today), but **for production, always run migrations**:
+
+```bash
+# After editing a model in models.py
+make migration MSG="add foo column to users"   # autogenerates a versions/*.py
+# Review the file, edit if needed
+make migrate                                   # applies it locally
+git add migrations/versions/
+git commit
+```
+
+Production deploys (Render / Fly etc.) should run `alembic upgrade head` as
+a pre-deploy hook before starting the app, so the DB schema lines up with
+the code being deployed.
+
+To roll back: `make migrate-down` (one migration) or
+`alembic downgrade <revision-id>`.
 
 ## API surface
 
