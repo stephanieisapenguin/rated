@@ -1,0 +1,40 @@
+# Replit configuration — https://docs.replit.com/replit-workspace/configuring-the-workspace
+# This file lives at the repo root because Replit reads it before doing
+# anything else. The backend code itself lives at build/backend/, which
+# means every command below has to cd in first.
+
+modules = ["python-3.11"]
+entrypoint = "build/backend/api.py"
+
+# What "Run" does in the Replit IDE — useful for poking at the app inside
+# Replit before deploying. Mirrors what `make dev` does locally.
+run = "cd build/backend && pip install -r requirements.txt && alembic upgrade head && uvicorn api:app --host 0.0.0.0 --port 8000"
+
+[nix]
+channel = "stable-24_05"
+
+# Public port. Replit Deployments require localPort=externalPort=80 for
+# the primary HTTP service in autoscale mode. uvicorn binds to $PORT,
+# which Replit injects.
+[[ports]]
+localPort = 8000
+externalPort = 80
+
+[deployment]
+deploymentTarget = "autoscale"   # alternative: "reserved-vm" for always-on
+# Build runs once when deploying; pre-warms wheels.
+build = ["sh", "-c", "cd build/backend && pip install -r requirements.txt"]
+# Runtime: bring schema up to head, then serve.
+run = ["sh", "-c", "cd build/backend && alembic upgrade head && uvicorn api:app --host 0.0.0.0 --port $PORT"]
+ignorePorts = false
+
+# Environment variables. Anything sensitive (GOOGLE_CLIENT_ID, DATABASE_URL)
+# should be set in Replit → Secrets, not here, since this file is in git.
+[env]
+ALLOWED_ORIGINS    = "https://silver-salamander-08daf4.netlify.app"
+SESSION_TTL_SECONDS = "2592000"
+PYTHONUNBUFFERED   = "1"
+
+[[hints]]
+regex = ".*ModuleNotFoundError.*"
+message = "Run `pip install -r build/backend/requirements.txt` (or just press Run — it's part of the run command)."
