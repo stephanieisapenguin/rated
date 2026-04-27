@@ -19,6 +19,7 @@ The App() class at the bottom wires everything together so callers can do
 
 from __future__ import annotations
 
+import enum
 import os
 import re
 import secrets
@@ -32,11 +33,21 @@ from sqlalchemy.orm import Session
 from models import (
     UserRow, MovieRow, RankingRow, PairwiseRow,
     WatchlistRow, SavedRow, ReviewRow, FollowRow, SessionRow,
+    NotificationRow,
 )
 
 
 # Session lifetime — 30 days unless overridden.
 SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", 30 * 24 * 3600))
+
+
+class NotificationType(str, enum.Enum):
+    """Closed set of notification kinds. Stored as a string in the DB so
+    SQLite/Postgres are both happy without a real ENUM type. Validated in the
+    service layer instead. Add new variants here when emitting new kinds."""
+    FOLLOW = "follow"
+    REVIEW = "review"   # reserved — not auto-emitted yet
+    RANK   = "rank"     # reserved — not auto-emitted yet
 
 
 # ─── Convenience factories ────────────────────────────────────────────────────
@@ -256,7 +267,7 @@ class FeedService:
             raise ValueError("Cannot follow yourself")
         if not db.get(UserRow, follower_id) or not db.get(UserRow, followee_id):
             raise ValueError("User not found")
-        # No-op if already following.
+        # No-op if already following — don't double-emit notifications.
         existing = db.execute(
             select(FollowRow).where(
                 FollowRow.follower_id == follower_id,
@@ -266,6 +277,14 @@ class FeedService:
         if existing:
             return
         db.add(FollowRow(follower_id=follower_id, followee_id=followee_id))
+        # Emit a notification on the followee. Body is left null; the actor's
+        # current username/name is JOINed in at list time, so renaming the
+        # actor doesn't leave stale text in the row.
+        db.add(NotificationRow(
+            user_id=followee_id,
+            type=NotificationType.FOLLOW.value,
+            actor_id=follower_id,
+        ))
         db.commit()
 
     def unfollow(self, db: Session, follower_id: str, followee_id: str) -> None:
@@ -449,6 +468,97 @@ class ReviewService:
         ).scalars())
 
 
+# ─── Notification Service ────────────────────────────────────────────────────
+
+class NotificationService:
+    """List, mark-read, delete, and create notifications for a user. Auto-emit
+    happens inline in other services (e.g. FeedService.follow), keeping
+    callers decoupled from notification bookkeeping.
+
+    list_for_user() returns dicts (not rows) because we LEFT JOIN the actor's
+    current username/name — that way renaming an actor doesn't leave stale
+    text in old notifications.
+    """
+
+    @staticmethod
+    def _validate_type(type_filter: Optional[str]) -> Optional[str]:
+        if type_filter is None:
+            return None
+        try:
+            return NotificationType(type_filter).value
+        except ValueError:
+            valid = ", ".join(t.value for t in NotificationType)
+            raise ValueError(f"Unknown notification type {type_filter!r}; expected one of: {valid}")
+
+    def list_for_user(self, db: Session, user_id: str, *,
+                      unread_only: bool = False,
+                      type_filter: Optional[str] = None,
+                      limit: int = 50, offset: int = 0) -> list[dict]:
+        type_value = self._validate_type(type_filter)
+        # LEFT JOIN keeps notifications visible even if their actor was deleted.
+        actor = UserRow  # alias for readability
+        stmt = (
+            select(NotificationRow, actor)
+            .outerjoin(actor, NotificationRow.actor_id == actor.user_id)
+            .where(NotificationRow.user_id == user_id)
+        )
+        if unread_only:
+            stmt = stmt.where(NotificationRow.read == 0)
+        if type_value is not None:
+            stmt = stmt.where(NotificationRow.type == type_value)
+        stmt = stmt.order_by(NotificationRow.created_at.desc()).offset(offset).limit(limit)
+
+        out = []
+        for note, actor_row in db.execute(stmt):
+            d = note.to_dict()
+            d["actor"] = (
+                {
+                    "user_id":  actor_row.user_id,
+                    "username": actor_row.username,
+                    "name":     actor_row.name,
+                }
+                if actor_row else None
+            )
+            out.append(d)
+        return out
+
+    def unread_count(self, db: Session, user_id: str) -> int:
+        return db.execute(
+            select(func.count()).select_from(NotificationRow)
+            .where(NotificationRow.user_id == user_id, NotificationRow.read == 0)
+        ).scalar() or 0
+
+    def mark_one_read(self, db: Session, user_id: str, notification_id: int) -> bool:
+        row = db.get(NotificationRow, notification_id)
+        if not row or row.user_id != user_id:
+            return False
+        if row.read:
+            return True
+        row.read = 1
+        db.commit()
+        return True
+
+    def mark_all_read(self, db: Session, user_id: str) -> int:
+        result = db.execute(
+            select(NotificationRow)
+            .where(NotificationRow.user_id == user_id, NotificationRow.read == 0)
+        )
+        rows = result.scalars().all()
+        for r in rows:
+            r.read = 1
+        db.commit()
+        return len(rows)
+
+    def delete(self, db: Session, user_id: str, notification_id: int) -> bool:
+        """Delete one notification. Returns False if not found or not owned."""
+        row = db.get(NotificationRow, notification_id)
+        if not row or row.user_id != user_id:
+            return False
+        db.delete(row)
+        db.commit()
+        return True
+
+
 # ─── App (DI root) ────────────────────────────────────────────────────────────
 
 class App:
@@ -456,12 +566,13 @@ class App:
     state lives in the SQLAlchemy session passed through each call."""
 
     def __init__(self):
-        self.auth              = AuthService()
-        self.ranking_service   = RankingService()
-        self.feed_service      = FeedService()
-        self.watchlist_service = WatchlistService()
-        self.saved_service     = SavedMovieService()
-        self.review_service    = ReviewService()
+        self.auth                  = AuthService()
+        self.ranking_service       = RankingService()
+        self.feed_service          = FeedService()
+        self.watchlist_service     = WatchlistService()
+        self.saved_service         = SavedMovieService()
+        self.review_service        = ReviewService()
+        self.notification_service  = NotificationService()
 
     def seed_movies(self, db: Session, movies: list[MovieRow]) -> None:
         for m in movies:
