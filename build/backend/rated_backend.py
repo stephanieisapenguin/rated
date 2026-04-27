@@ -213,11 +213,13 @@ class RankingService:
         db.refresh(row)
         return row
 
-    def user_rankings(self, db: Session, user_id: str) -> list[RankingRow]:
+    def user_rankings(self, db: Session, user_id: str,
+                      limit: int = 50, offset: int = 0) -> list[RankingRow]:
         return list(db.execute(
             select(RankingRow)
             .where(RankingRow.user_id == user_id)
             .order_by(RankingRow.score.desc())
+            .offset(offset).limit(limit)
         ).scalars())
 
     def average_score(self, db: Session, movie_id: str) -> float:
@@ -287,7 +289,8 @@ class FeedService:
             .where(FollowRow.follower_id == user_id)
         ).scalar() or 0
 
-    def get_feed(self, db: Session, user_id: str, limit: int = 20) -> list[RankingRow]:
+    def get_feed(self, db: Session, user_id: str,
+                 limit: int = 20, offset: int = 0) -> list[RankingRow]:
         if not db.get(UserRow, user_id):
             raise ValueError(f"User {user_id} not found")
         followee_ids = [r[0] for r in db.execute(
@@ -299,7 +302,7 @@ class FeedService:
             select(RankingRow)
             .where(RankingRow.user_id.in_(followee_ids))
             .order_by(RankingRow.ranked_at.desc())
-            .limit(limit)
+            .offset(offset).limit(limit)
         ).scalars())
 
 
@@ -332,11 +335,13 @@ class WatchlistService:
         )
         db.commit()
 
-    def get(self, db: Session, user_id: str) -> list[str]:
+    def get(self, db: Session, user_id: str,
+            limit: int = 50, offset: int = 0) -> list[str]:
         rows = db.execute(
             select(WatchlistRow.movie_id)
             .where(WatchlistRow.user_id == user_id)
             .order_by(WatchlistRow.added_at.desc())
+            .offset(offset).limit(limit)
         ).all()
         return [r[0] for r in rows]
 
@@ -367,11 +372,13 @@ class SavedMovieService:
         )
         db.commit()
 
-    def get(self, db: Session, user_id: str) -> list[str]:
+    def get(self, db: Session, user_id: str,
+            limit: int = 50, offset: int = 0) -> list[str]:
         rows = db.execute(
             select(SavedRow.movie_id)
             .where(SavedRow.user_id == user_id)
             .order_by(SavedRow.added_at.desc())
+            .offset(offset).limit(limit)
         ).all()
         return [r[0] for r in rows]
 
@@ -423,18 +430,22 @@ class ReviewService:
         db.commit()
         return result.rowcount > 0
 
-    def get_for_user(self, db: Session, user_id: str) -> list[ReviewRow]:
+    def get_for_user(self, db: Session, user_id: str,
+                     limit: int = 50, offset: int = 0) -> list[ReviewRow]:
         return list(db.execute(
             select(ReviewRow)
             .where(ReviewRow.user_id == user_id)
             .order_by(func.coalesce(ReviewRow.edited_at, ReviewRow.created_at).desc())
+            .offset(offset).limit(limit)
         ).scalars())
 
-    def get_for_movie(self, db: Session, movie_id: str) -> list[ReviewRow]:
+    def get_for_movie(self, db: Session, movie_id: str,
+                      limit: int = 50, offset: int = 0) -> list[ReviewRow]:
         return list(db.execute(
             select(ReviewRow)
             .where(ReviewRow.movie_id == movie_id)
             .order_by(func.coalesce(ReviewRow.edited_at, ReviewRow.created_at).desc())
+            .offset(offset).limit(limit)
         ).scalars())
 
 

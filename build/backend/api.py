@@ -70,6 +70,22 @@ app.add_middleware(
 app_instance = App()
 
 
+# ─── Pagination helper ────────────────────────────────────────────────────────
+# Clamp user-supplied paging params so a malicious or buggy client can't ask
+# for ?limit=10000000 and OOM the server. Defaults match what the routes had
+# before pagination was added.
+
+PAGE_LIMIT_DEFAULT = 50
+PAGE_LIMIT_MAX = 200
+
+
+def _clamp_pagination(limit: Optional[int], offset: Optional[int],
+                      default: int = PAGE_LIMIT_DEFAULT) -> tuple[int, int]:
+    lim = max(1, min(int(limit or default), PAGE_LIMIT_MAX))
+    off = max(0, int(offset or 0))
+    return lim, off
+
+
 # ─── Schema + seeding (run once on startup) ───────────────────────────────────
 
 @app.on_event("startup")
@@ -190,15 +206,18 @@ def list_movies(
     q: Optional[str] = None,
     genre: Optional[str] = None,
     limit: int = 100,
+    offset: int = 0,
     db: Session = Depends(get_db),
 ):
-    """List movies. Optional ?q=<title-substring> and ?genre=<exact-match>."""
+    """List movies. Optional ?q=<title-substring> and ?genre=<exact-match>.
+    Paginate with ?limit=&offset= (limit clamped to 200 max)."""
+    lim, off = _clamp_pagination(limit, offset, default=100)
     stmt = select(MovieRow)
     if q:
         stmt = stmt.where(func.lower(MovieRow.title).like(f"%{q.lower()}%"))
     if genre:
         stmt = stmt.where(func.lower(MovieRow.genre) == genre.lower())
-    stmt = stmt.order_by(MovieRow.title).limit(limit)
+    stmt = stmt.order_by(MovieRow.title).offset(off).limit(lim)
     return [m.to_dict() for m in db.execute(stmt).scalars()]
 
 
@@ -219,9 +238,15 @@ def get_movie(movie_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/movies/{movie_id}/reviews", tags=["Reviews"])
-def get_movie_reviews(movie_id: str, db: Session = Depends(get_db)):
+def get_movie_reviews(
+    movie_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    lim, off = _clamp_pagination(limit, offset)
     out = []
-    for r in app_instance.review_service.get_for_movie(db, movie_id):
+    for r in app_instance.review_service.get_for_movie(db, movie_id, limit=lim, offset=off):
         d = r.to_dict()
         author = db.get(UserRow, r.user_id)
         d["username"] = author.username if author else None
@@ -257,15 +282,21 @@ def get_movie_stats(movie_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/movies/{movie_id}/rankings", tags=["Rankings"])
-def list_movie_rankings(movie_id: str, limit: int = 50, db: Session = Depends(get_db)):
+def list_movie_rankings(
+    movie_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
     """All rankings for a movie, highest score first then most recent."""
     if not db.get(MovieRow, movie_id):
         raise HTTPException(status_code=404, detail=f"Movie {movie_id} not found")
+    lim, off = _clamp_pagination(limit, offset)
     rows = db.execute(
         select(RankingRow)
         .where(RankingRow.movie_id == movie_id)
         .order_by(RankingRow.score.desc(), RankingRow.ranked_at.desc())
-        .limit(limit)
+        .offset(off).limit(lim)
     ).scalars()
     return [r.to_dict() for r in rows]
 
@@ -342,10 +373,12 @@ def claim_username(
 def list_users(
     q: Optional[str] = None,
     limit: int = 50,
+    offset: int = 0,
     db: Session = Depends(get_db),
 ):
     """List users for discovery. Optional ?q=<substring> matches both
-    username (case-insensitive) and display name."""
+    username (case-insensitive) and display name. Paginate with ?limit=&offset=."""
+    lim, off = _clamp_pagination(limit, offset)
     stmt = select(UserRow)
     if q:
         like = f"%{q.lower()}%"
@@ -353,16 +386,18 @@ def list_users(
             func.lower(UserRow.username).like(like),
             func.lower(UserRow.name).like(like),
         ))
-    stmt = stmt.order_by(UserRow.created_at).limit(limit)
+    stmt = stmt.order_by(UserRow.created_at).offset(off).limit(lim)
     return [u.to_dict() for u in db.execute(stmt).scalars()]
 
 
-def _list_follow_edge(db: Session, user_id: str, *, side: str) -> list[dict]:
+def _list_follow_edge(db: Session, user_id: str, *, side: str,
+                      limit: int = 50, offset: int = 0) -> list[dict]:
     """Shared helper for /followers and /following.
     side='followers' → users following user_id.
     side='following' → users user_id is following."""
     if not db.get(UserRow, user_id):
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+    lim, off = _clamp_pagination(limit, offset)
     if side == "followers":
         join_col, where_col = FollowRow.follower_id, FollowRow.followee_id
     else:
@@ -372,18 +407,21 @@ def _list_follow_edge(db: Session, user_id: str, *, side: str) -> list[dict]:
         .join(FollowRow, join_col == UserRow.user_id)
         .where(where_col == user_id)
         .order_by(FollowRow.created_at.desc())
+        .offset(off).limit(lim)
     ).scalars()
     return [u.to_dict() for u in rows]
 
 
 @app.get("/users/{user_id}/followers", tags=["Users"])
-def list_followers(user_id: str, db: Session = Depends(get_db)):
-    return _list_follow_edge(db, user_id, side="followers")
+def list_followers(user_id: str, limit: int = 50, offset: int = 0,
+                   db: Session = Depends(get_db)):
+    return _list_follow_edge(db, user_id, side="followers", limit=limit, offset=offset)
 
 
 @app.get("/users/{user_id}/following", tags=["Users"])
-def list_following(user_id: str, db: Session = Depends(get_db)):
-    return _list_follow_edge(db, user_id, side="following")
+def list_following(user_id: str, limit: int = 50, offset: int = 0,
+                   db: Session = Depends(get_db)):
+    return _list_follow_edge(db, user_id, side="following", limit=limit, offset=offset)
 
 
 @app.get("/users/{user_id}", tags=["Users"])
@@ -422,8 +460,12 @@ def add_ranking(user_id: str, body: RankRequest, db: Session = Depends(get_db)):
 
 
 @app.get("/users/{user_id}/rankings", tags=["Rankings"])
-def get_user_rankings(user_id: str, db: Session = Depends(get_db)):
-    return [r.to_dict() for r in app_instance.ranking_service.user_rankings(db, user_id)]
+def get_user_rankings(user_id: str, limit: int = 50, offset: int = 0,
+                      db: Session = Depends(get_db)):
+    lim, off = _clamp_pagination(limit, offset)
+    return [r.to_dict() for r in app_instance.ranking_service.user_rankings(
+        db, user_id, limit=lim, offset=off,
+    )]
 
 
 @app.post("/users/{user_id}/pairwise", tags=["Rankings"])
@@ -457,9 +499,13 @@ def unfollow(user_id: str, followee_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/users/{user_id}/feed", tags=["Feed"])
-def get_feed(user_id: str, limit: int = 20, db: Session = Depends(get_db)):
+def get_feed(user_id: str, limit: int = 20, offset: int = 0,
+             db: Session = Depends(get_db)):
+    lim, off = _clamp_pagination(limit, offset, default=20)
     try:
-        return [r.to_dict() for r in app_instance.feed_service.get_feed(db, user_id, limit)]
+        return [r.to_dict() for r in app_instance.feed_service.get_feed(
+            db, user_id, limit=lim, offset=off,
+        )]
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -482,8 +528,10 @@ def remove_from_watchlist(user_id: str, movie_id: str, db: Session = Depends(get
 
 
 @app.get("/users/{user_id}/watchlist", tags=["Watchlist"])
-def get_watchlist(user_id: str, db: Session = Depends(get_db)):
-    return app_instance.watchlist_service.get(db, user_id)
+def get_watchlist(user_id: str, limit: int = 50, offset: int = 0,
+                  db: Session = Depends(get_db)):
+    lim, off = _clamp_pagination(limit, offset)
+    return app_instance.watchlist_service.get(db, user_id, limit=lim, offset=off)
 
 
 # ─── Saved (bookmarks) ───────────────────────────────────────────────────────
@@ -504,8 +552,10 @@ def remove_saved(user_id: str, movie_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/users/{user_id}/saved", tags=["Saved"])
-def get_saved(user_id: str, db: Session = Depends(get_db)):
-    return app_instance.saved_service.get(db, user_id)
+def get_saved(user_id: str, limit: int = 50, offset: int = 0,
+              db: Session = Depends(get_db)):
+    lim, off = _clamp_pagination(limit, offset)
+    return app_instance.saved_service.get(db, user_id, limit=lim, offset=off)
 
 
 # ─── Reviews ─────────────────────────────────────────────────────────────────
@@ -529,5 +579,9 @@ def delete_review(user_id: str, movie_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/users/{user_id}/reviews", tags=["Reviews"])
-def get_user_reviews(user_id: str, db: Session = Depends(get_db)):
-    return [r.to_dict() for r in app_instance.review_service.get_for_user(db, user_id)]
+def get_user_reviews(user_id: str, limit: int = 50, offset: int = 0,
+                     db: Session = Depends(get_db)):
+    lim, off = _clamp_pagination(limit, offset)
+    return [r.to_dict() for r in app_instance.review_service.get_for_user(
+        db, user_id, limit=lim, offset=off,
+    )]

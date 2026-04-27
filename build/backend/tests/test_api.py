@@ -318,6 +318,57 @@ def test_followers_404_for_unknown_user(client):
     assert client.get("/users/no-such-user/following").status_code == 404
 
 
+# ─── Pagination ──────────────────────────────────────────────────────────────
+
+
+def test_users_pagination_offset(client):
+    """offset advances the page; limit caps the page size."""
+    page1 = client.get("/users", params={"limit": 3, "offset": 0}).json()
+    page2 = client.get("/users", params={"limit": 3, "offset": 3}).json()
+    page3 = client.get("/users", params={"limit": 3, "offset": 6}).json()
+    assert len(page1) == 3
+    assert len(page2) == 3
+    assert len(page3) == 2  # 8 seeded users → 3 + 3 + 2
+
+    # No overlap between pages
+    ids = [{u["user_id"] for u in p} for p in (page1, page2, page3)]
+    assert ids[0].isdisjoint(ids[1])
+    assert ids[1].isdisjoint(ids[2])
+
+    # Past the end → empty
+    assert client.get("/users", params={"limit": 3, "offset": 99}).json() == []
+
+
+def test_users_pagination_clamps_limit(client):
+    """limit > 200 must be clamped, limit <= 0 must default to >= 1."""
+    huge = client.get("/users", params={"limit": 100000}).json()
+    assert len(huge) <= 200
+    # zero/negative limit gets clamped to >=1
+    one = client.get("/users", params={"limit": 0}).json()
+    assert len(one) >= 1
+
+
+def test_movies_pagination(client):
+    page1 = client.get("/movies", params={"limit": 2, "offset": 0}).json()
+    page2 = client.get("/movies", params={"limit": 2, "offset": 2}).json()
+    assert len(page1) == 2
+    assert len(page2) == 2
+    assert {m["movie_id"] for m in page1}.isdisjoint({m["movie_id"] for m in page2})
+
+
+def test_user_rankings_pagination(client):
+    """Seeded cinephile99 has 4 rankings."""
+    cine = client.get("/users/by-username/cinephile99").json()
+    page1 = client.get(f"/users/{cine['user_id']}/rankings",
+                       params={"limit": 2, "offset": 0}).json()
+    page2 = client.get(f"/users/{cine['user_id']}/rankings",
+                       params={"limit": 2, "offset": 2}).json()
+    assert len(page1) == 2 and len(page2) == 2
+    # Together they cover all 4 rankings, no duplicates
+    movie_ids = [r["movie"]["movie_id"] for r in page1 + page2]
+    assert len(movie_ids) == 4 and len(set(movie_ids)) == 4
+
+
 def test_persistence_across_restart(tmp_path, monkeypatch):
     """Mutate, drop the FastAPI process, create a new TestClient pointed at
     the same SQLite file → data is still there."""
