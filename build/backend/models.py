@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 
 from sqlalchemy import (
-    Column, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint,
+    Boolean, Column, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -27,6 +27,9 @@ class UserRow(Base):
     avatar_url  = Column(String, nullable=True)
     google_sub  = Column(String, nullable=True, unique=True, index=True)
     username    = Column(String, nullable=True, unique=True, index=True)
+    # Private accounts route new follows to a pending state (see FollowRow).
+    # Existing followers are unaffected when a user flips this on.
+    is_private  = Column(Boolean, nullable=False, default=False, server_default="0")
     created_at  = Column(Float, nullable=False, default=lambda: time.time())
 
     def to_dict(self):
@@ -36,6 +39,7 @@ class UserRow(Base):
             "email":            self.email,
             "avatar_url":       self.avatar_url,
             "username":         self.username,
+            "is_private":       bool(self.is_private),
             "follower_count":   0,  # filled in by service when needed
             "following_count":  0,
         }
@@ -142,17 +146,22 @@ class ReviewRow(Base):
 
 
 class FollowRow(Base):
-    """Edge: follower_id follows followee_id."""
+    """Edge: follower_id follows followee_id.
+    state is "approved" for normal follows and "pending" when the followee
+    is private and hasn't accepted yet. Only "approved" rows count toward
+    follower_count / following_count / feed."""
     __tablename__ = "follows"
     __table_args__ = (
         UniqueConstraint("follower_id", "followee_id", name="uq_follow_edge"),
         Index("ix_follows_follower", "follower_id"),
         Index("ix_follows_followee", "followee_id"),
+        Index("ix_follows_followee_state", "followee_id", "state"),
     )
 
     id           = Column(Integer, primary_key=True, autoincrement=True)
     follower_id  = Column(String, ForeignKey("users.user_id"), nullable=False)
     followee_id  = Column(String, ForeignKey("users.user_id"), nullable=False)
+    state        = Column(String, nullable=False, default="approved", server_default="approved")
     created_at   = Column(Float, nullable=False, default=lambda: time.time())
 
 
