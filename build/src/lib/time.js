@@ -22,6 +22,13 @@ export const formatRelativeTime = (ts) => {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 };
 
+// Format an ISO date as "May 15, 2026". Empty string for missing input.
+export const formatReleaseDate = (isoDate) => {
+  if (!isoDate) return "";
+  const d = new Date(isoDate + "T00:00:00");
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+};
+
 // Days until an ISO release date (e.g. "2026-05-15"). Returns 0 on the day,
 // negative once released, null when the input is missing.
 export const daysUntil = (isoDate) => {

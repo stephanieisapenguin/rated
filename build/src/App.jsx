@@ -5,29 +5,49 @@ import { AlreadyRankedFallback } from "./screens/AlreadyRankedFallback";
 import { UsernameScreen } from "./screens/UsernameScreen";
 import { UpcomingScreen } from "./screens/UpcomingScreen";
 import { NotificationsScreen } from "./screens/NotificationsScreen";
+import { ReviewModal } from "./screens/ReviewModal";
+import { MovieDetailScreen } from "./screens/MovieDetailScreen";
+import { LeaderboardScreen } from "./screens/LeaderboardScreen";
+import { UserProfileScreen } from "./screens/UserProfileScreen";
 import { TapTarget } from "./components/TapTarget";
 import { Poster } from "./components/Poster";
 import { PullIndicator } from "./components/PullIndicator";
 import { ScreenWithNav } from "./components/ScreenWithNav";
 import { useConfirm } from "./components/useConfirm";
+import { Badge } from "./components/Badge";
+import { Btn } from "./components/Btn";
+import { ShareIcon } from "./components/ShareIcon";
+import { Skeleton, FeedSkeleton } from "./components/Skeleton";
+import { CropperModal } from "./components/CropperModal";
+import { ImageViewer } from "./components/ImageViewer";
+import { ShareSheet } from "./components/ShareSheet";
+import { TrailerModal } from "./components/TrailerModal";
+import { DraggableList } from "./components/DraggableList";
+import { SwipeableRow } from "./components/SwipeableRow";
+import { ReportBlockMenu } from "./components/ReportBlockMenu";
 import { haptic } from "./lib/haptic";
 import {
+  useEdgeSwipeBack,
   useFocusTrap,
   useKeyboardAvoidance,
   useMinuteTick,
   useOnlineStatus,
   usePullToRefresh,
+  useShareInvite,
 } from "./lib/hooks";
 import {
   ALL_GENRES,
+  GLOBAL_FEED,
   MOCK_FEED,
   MOCK_FRIENDS,
   MOVIES,
   UPCOMING,
+  USER_PROFILES,
 } from "./lib/mockData";
 import {
   daysUntil,
   formatRelativeTime,
+  formatReleaseDate,
   parseRelativeToTs,
 } from "./lib/time";
 import {
@@ -38,6 +58,9 @@ import {
   tmdbSearch,
   tmdbTopRated,
 } from "./lib/tmdb";
+import { calcElo } from "./lib/elo";
+import { computeStreak } from "./lib/streak";
+import { FOLLOW_LIMIT_PER_HOUR, FOLLOW_WINDOW_MS } from "./lib/moderation";
 import { checkProfanity } from "./lib/profanity";
 import { TAKEN_USERNAMES } from "./lib/usernames";
 import { API, API_BASE } from "./lib/api";
@@ -75,40 +98,10 @@ import { API, API_BASE } from "./lib/api";
 // Share icon — square with up-arrow (iOS-style). Used everywhere a share affordance
 // appears: feed cards, movie detail, profile, share-sheet header, share-sheet menu items.
 // Single source of truth so the visual identity stays consistent.
-const ShareIcon = ({ size=14, color=W.dim, strokeWidth=2 }) => (
-  <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none"
-       stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
-    <path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7"/>
-    <polyline points="16 6 12 2 8 6"/>
-    <line x1="12" y1="2" x2="12" y2="15"/>
-  </svg>
-);
 
 // Skeleton placeholder — pulsing gray block matching the shape of loaded content
-const Skeleton = ({ w="100%", h=16, radius=6, style={} }) => (
-  <div style={{width:w,height:h,borderRadius:radius,background:W.card,position:"relative",overflow:"hidden",...style}}>
-    <div style={{position:"absolute",inset:0,background:`linear-gradient(90deg,transparent,${W.border}66,transparent)`,animation:"skeleton-shimmer 1.4s infinite"}}/>
-  </div>
-);
 
 // Feed skeleton — 3 placeholder cards
-const FeedSkeleton = () => (
-  <div style={{padding:"0 22px",display:"flex",flexDirection:"column",gap:10}}>
-    {[0,1,2].map(i=>(
-      <div key={i} style={{background:W.card,border:`1px solid ${W.border}`,borderRadius:14,padding:12,display:"flex",flexDirection:"column",gap:8}}>
-        <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <Skeleton w={30} h={30} radius={15}/>
-          <div style={{flex:1,display:"flex",flexDirection:"column",gap:4}}>
-            <Skeleton w={80} h={11}/>
-            <Skeleton w={50} h={8}/>
-          </div>
-        </div>
-        <Skeleton w="100%" h={10}/>
-        <Skeleton w="70%" h={10}/>
-      </div>
-    ))}
-  </div>
-);
 
 // Profile photo cropper. Loads an image, lets the user drag to reposition and
 // scroll/pinch to zoom inside a circular mask, then writes the visible square
@@ -120,114 +113,6 @@ const FeedSkeleton = () => (
 //   at center, then offset by (offsetX, offsetY).
 // - On save we re-render at full output resolution onto a 256×256 canvas using the same
 //   transformation math, so the saved image matches what the user saw in the preview.
-const CropperModal = ({ src, onSave, onCancel }) => {
-  const FRAME_SIZE = 240;
-  const OUTPUT_SIZE = 256;
-  const [offset, setOffset] = useState({x:0, y:0});
-  const [imgDims, setImgDims] = useState(null); // {w, h} natural dimensions
-
-  // Load image to get natural dimensions
-  useEffect(()=>{
-    if (!src) return;
-    const img = new Image();
-    img.onload = () => setImgDims({w: img.naturalWidth, h: img.naturalHeight});
-    img.src = src;
-  },[src]);
-
-  // Image fills the frame using "cover" sizing — short edge matches frame, long edge overflows.
-  // No zoom: this is always the displayed size. User can only pan within the overflow area.
-  const baseSize = imgDims ? (() => {
-    const aspect = imgDims.w / imgDims.h;
-    if (aspect > 1) {
-      return { w: FRAME_SIZE * aspect, h: FRAME_SIZE };
-    } else {
-      return { w: FRAME_SIZE, h: FRAME_SIZE / aspect };
-    }
-  })() : { w: FRAME_SIZE, h: FRAME_SIZE };
-
-  const displayW = baseSize.w;
-  const displayH = baseSize.h;
-
-  // Clamp offsets so the image always covers the frame (no transparent edges).
-  const clampOffset = (x, y) => {
-    const maxX = Math.max(0, (displayW - FRAME_SIZE) / 2);
-    const maxY = Math.max(0, (displayH - FRAME_SIZE) / 2);
-    return {
-      x: Math.max(-maxX, Math.min(maxX, x)),
-      y: Math.max(-maxY, Math.min(maxY, y)),
-    };
-  };
-
-  // Pan-only gesture: single pointer, drag to reposition.
-  const dragRef = useRef(null);
-  const onPointerDown = (e) => {
-    e.preventDefault();
-    try { e.target.setPointerCapture && e.target.setPointerCapture(e.pointerId); } catch(_){}
-    dragRef.current = { startX: e.clientX, startY: e.clientY, startOffset: { ...offset } };
-  };
-  const onPointerMove = (e) => {
-    if (!dragRef.current) return;
-    const dx = e.clientX - dragRef.current.startX;
-    const dy = e.clientY - dragRef.current.startY;
-    setOffset(clampOffset(dragRef.current.startOffset.x + dx, dragRef.current.startOffset.y + dy));
-  };
-  const onPointerUp = () => { dragRef.current = null; };
-
-  const handleSave = () => {
-    if (!imgDims) return;
-    const canvas = document.createElement("canvas");
-    canvas.width = OUTPUT_SIZE;
-    canvas.height = OUTPUT_SIZE;
-    const ctx = canvas.getContext("2d");
-    // Map from preview frame → output canvas: scale up by OUTPUT_SIZE / FRAME_SIZE
-    const ratio = OUTPUT_SIZE / FRAME_SIZE;
-    const drawW = displayW * ratio;
-    const drawH = displayH * ratio;
-    const drawX = (OUTPUT_SIZE - drawW) / 2 + offset.x * ratio;
-    const drawY = (OUTPUT_SIZE - drawH) / 2 + offset.y * ratio;
-    const img = new Image();
-    img.onload = () => {
-      ctx.fillStyle = "#000";
-      ctx.fillRect(0, 0, OUTPUT_SIZE, OUTPUT_SIZE);
-      ctx.drawImage(img, drawX, drawY, drawW, drawH);
-      onSave(canvas.toDataURL("image/jpeg", 0.9));
-    };
-    img.src = src;
-  };
-
-  return (
-    <div role="dialog" aria-modal="true" aria-label="Crop profile photo"
-         style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.92)",zIndex:90,display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",padding:20}}>
-      <div style={{textAlign:"center",marginBottom:16,color:W.text,fontFamily:"monospace",fontSize:13,fontWeight:800}}>
-        ✂ Crop Photo
-      </div>
-      <div style={{fontSize:9,color:W.dim,fontFamily:"monospace",marginBottom:14,textAlign:"center",lineHeight:1.5}}>
-        Drag to reposition
-      </div>
-      {/* Crop frame with circular mask */}
-      <div style={{position:"relative",width:FRAME_SIZE,height:FRAME_SIZE,marginBottom:24}}>
-        <div onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
-             style={{position:"absolute",inset:0,borderRadius:"50%",overflow:"hidden",cursor:"grab",touchAction:"none",border:`2px solid ${W.accent}`}}>
-          {src&&<img src={src} alt="" draggable="false"
-                     style={{position:"absolute",left:"50%",top:"50%",width:displayW,height:displayH,transform:`translate(calc(-50% + ${offset.x}px), calc(-50% + ${offset.y}px))`,userSelect:"none",pointerEvents:"none"}}/>}
-        </div>
-        {/* Outer ring indicator */}
-        <div style={{position:"absolute",inset:-4,borderRadius:"50%",border:`1px dashed ${W.dim}66`,pointerEvents:"none"}}/>
-      </div>
-      {/* Action buttons */}
-      <div style={{display:"flex",gap:10,width:FRAME_SIZE}}>
-        <TapTarget onClick={onCancel} label="Cancel cropping" minTap={false}
-          style={{flex:1,padding:"11px",borderRadius:10,background:W.card,border:`1px solid ${W.border}`,textAlign:"center",fontSize:11,fontWeight:700,color:W.text,fontFamily:"monospace",display:"flex",alignItems:"center",justifyContent:"center",minHeight:40}}>
-          Cancel
-        </TapTarget>
-        <TapTarget onClick={handleSave} label="Save cropped photo" minTap={false}
-          style={{flex:1,padding:"11px",borderRadius:10,background:W.accent,border:`1px solid ${W.accent}`,textAlign:"center",fontSize:11,fontWeight:700,color:"#fff",fontFamily:"monospace",display:"flex",alignItems:"center",justifyContent:"center",minHeight:40}}>
-          Use Photo
-        </TapTarget>
-      </div>
-    </div>
-  );
-};
 
 // Drag-to-reorder list using Pointer Events (works for both mouse and touch).
 // `items` is the array, `keyOf(item)` returns a stable key, `renderItem(item, dragHandleProps, isDragging)`
@@ -237,335 +122,18 @@ const CropperModal = ({ src, onSave, onCancel }) => {
 // Uses transform translateY for the dragged item (no layout reflow during drag), and
 // shifts neighboring items via CSS transform when the dragged item crosses their midpoints.
 // Each row's row height is measured on pointerdown so the math works for any row size.
-const DraggableList = ({ items, keyOf, renderItem, onReorder, disabled=false }) => {
-  const containerRef = useRef(null);
-  const rowRefs = useRef({});
-  const [draggingKey, setDraggingKey] = useState(null);
-  const [dragOffsetY, setDragOffsetY] = useState(0); // pixel offset of the dragged row
-  const [hoverIndex, setHoverIndex] = useState(null); // current target index
-  const dragState = useRef(null); // { startY, startIndex, rowHeight, rowOffsets[] }
-
-  const handlePointerDown = (e, item, index) => {
-    if (disabled) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const row = rowRefs.current[keyOf(item)];
-    if (!row) return;
-    const rect = row.getBoundingClientRect();
-    // Capture pointer so we keep getting move events even if the cursor leaves the row
-    try { e.target.setPointerCapture && e.target.setPointerCapture(e.pointerId); } catch(_){}
-    // Pre-measure each row's vertical offset (relative to container) so we can compute
-    // hover index from a single pointer Y coord without re-querying DOM each move.
-    const containerTop = containerRef.current?.getBoundingClientRect().top || 0;
-    const offsets = items.map(it=>{
-      const r = rowRefs.current[keyOf(it)];
-      return r ? r.getBoundingClientRect().top - containerTop : 0;
-    });
-    dragState.current = {
-      startY: e.clientY,
-      startIndex: index,
-      rowHeight: rect.height,
-      offsets,
-    };
-    setDraggingKey(keyOf(item));
-    setHoverIndex(index);
-    setDragOffsetY(0);
-    haptic("medium");
-  };
-
-  const handlePointerMove = (e) => {
-    if (!dragState.current) return;
-    e.preventDefault();
-    const { startY, startIndex, rowHeight, offsets } = dragState.current;
-    const delta = e.clientY - startY;
-    setDragOffsetY(delta);
-    // Determine target index: where would the dragged row's center sit?
-    const draggedCenter = offsets[startIndex] + rowHeight/2 + delta;
-    let target = startIndex;
-    for (let i = 0; i < items.length; i++) {
-      const itemCenter = offsets[i] + rowHeight/2;
-      if (i < startIndex && draggedCenter < itemCenter) { target = i; break; }
-      if (i > startIndex && draggedCenter > itemCenter) target = i;
-    }
-    if (target !== hoverIndex) {
-      setHoverIndex(target);
-      haptic("light");
-    }
-  };
-
-  const handlePointerUp = (e) => {
-    if (!dragState.current) return;
-    const { startIndex } = dragState.current;
-    const target = hoverIndex;
-    dragState.current = null;
-    setDraggingKey(null);
-    setDragOffsetY(0);
-    setHoverIndex(null);
-    if (target !== null && target !== startIndex && onReorder) {
-      onReorder(startIndex, target);
-    }
-  };
-
-  return (
-    <div ref={containerRef} style={{display:"flex",flexDirection:"column",gap:6}}
-         onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp}>
-      {items.map((item, i)=>{
-        const k = keyOf(item);
-        const isDragging = k === draggingKey;
-        // Shift non-dragged rows to make room for the dragged row's hover position
-        let translateY = 0;
-        if (draggingKey && !isDragging && hoverIndex !== null && dragState.current) {
-          const startIndex = dragState.current.startIndex;
-          const rh = dragState.current.rowHeight;
-          // Items between startIndex and hoverIndex shift to fill the gap
-          if (startIndex < hoverIndex && i > startIndex && i <= hoverIndex) translateY = -rh;
-          else if (startIndex > hoverIndex && i < startIndex && i >= hoverIndex) translateY = rh;
-        }
-        const dragHandleProps = {
-          onPointerDown: (e)=>handlePointerDown(e, item, i),
-          style: { cursor: disabled ? "default" : "grab", touchAction: "none" },
-          "aria-label": "Drag to reorder",
-        };
-        return (
-          <div key={k}
-               ref={el=>{ if(el) rowRefs.current[k]=el; }}
-               style={{
-                 transform: isDragging ? `translateY(${dragOffsetY}px)` : `translateY(${translateY}px)`,
-                 transition: isDragging ? "none" : "transform 0.18s cubic-bezier(.2,.7,.3,1)",
-                 zIndex: isDragging ? 10 : 1,
-                 opacity: isDragging ? 0.92 : 1,
-                 boxShadow: isDragging ? `0 8px 20px rgba(0,0,0,0.4)` : "none",
-                 borderRadius: 10,
-                 position: "relative",
-               }}>
-            {renderItem(item, dragHandleProps, isDragging)}
-          </div>
-        );
-      })}
-    </div>
-  );
-};
 
 // Swipeable row — reveals action buttons on left swipe. Children is the row content.
 // actions = [{icon, label, color, onPress}]  — rendered right-to-left
-const SwipeableRow = ({ children, actions=[], onSwipeOpen }) => {
-  const [offset, setOffset] = useState(0); // negative = swiped left
-  const startX = useRef(null);
-  const startOffset = useRef(0);
-  const actionWidth = actions.length * 64;
-
-  const handleStart = (x) => { startX.current = x; startOffset.current = offset; };
-  const handleMove = (x) => {
-    if (startX.current == null) return;
-    const dx = x - startX.current;
-    const next = Math.max(-actionWidth, Math.min(0, startOffset.current + dx));
-    setOffset(next);
-  };
-  const handleEnd = () => {
-    if (startX.current == null) return;
-    // Snap open or closed based on threshold
-    if (offset < -actionWidth/2) {
-      setOffset(-actionWidth);
-      haptic("light");
-      onSwipeOpen?.();
-    } else {
-      setOffset(0);
-    }
-    startX.current = null;
-  };
-  return (
-    <div style={{position:"relative",overflow:"hidden",borderRadius:10}}>
-      {/* Action buttons revealed underneath */}
-      <div style={{position:"absolute",right:0,top:0,bottom:0,display:"flex"}}>
-        {actions.map((a,i)=>(
-          <div key={i} onClick={()=>{haptic("medium");a.onPress?.();setOffset(0);}} style={{width:64,background:a.color||W.accent,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2,cursor:"pointer"}}>
-            <span style={{fontSize:16,color:"#fff"}}>{a.icon}</span>
-            <span style={{fontSize:8,color:"#fff",fontFamily:"monospace",fontWeight:700}}>{a.label}</span>
-          </div>
-        ))}
-      </div>
-      {/* Slidable content layer */}
-      <div
-        onTouchStart={e=>handleStart(e.touches[0].clientX)}
-        onTouchMove={e=>handleMove(e.touches[0].clientX)}
-        onTouchEnd={handleEnd}
-        style={{transform:`translateX(${offset}px)`,transition:startX.current==null?"transform 0.2s":"none",position:"relative",zIndex:1,background:W.card}}>
-        {children}
-      </div>
-    </div>
-  );
-};
 
 // Edge-swipe back hook — detects iOS-style swipe from left edge. Calls onBack when triggered.
-const useEdgeSwipeBack = (onBack) => {
-  const startX = useRef(null);
-  const startY = useRef(null);
-  const triggered = useRef(false);
-  const handleTouchStart = (e) => {
-    if (e.touches[0].clientX < 24) { // left edge
-      startX.current = e.touches[0].clientX;
-      startY.current = e.touches[0].clientY;
-      triggered.current = false;
-    }
-  };
-  const handleTouchMove = (e) => {
-    if (startX.current == null || triggered.current) return;
-    const dx = e.touches[0].clientX - startX.current;
-    const dy = Math.abs(e.touches[0].clientY - startY.current);
-    if (dx > 70 && dy < 50) {
-      triggered.current = true;
-      haptic("medium");
-      onBack?.();
-    }
-  };
-  const handleTouchEnd = () => { startX.current = null; triggered.current = false; };
-  return { onTouchStart: handleTouchStart, onTouchMove: handleTouchMove, onTouchEnd: handleTouchEnd };
-};
 
 // Full-screen image viewer with tap-to-close
-const ImageViewer = ({ url, onClose }) => {
-  const containerRef = useRef(null);
-  useFocusTrap(containerRef, !!url, onClose);
-  if (!url) return null;
-  return (
-    <div ref={containerRef} role="dialog" aria-modal="true" aria-label="Image viewer"
-         onClick={onClose}
-         style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.95)",zIndex:80,display:"flex",alignItems:"center",justifyContent:"center",padding:20,cursor:"pointer"}}>
-      <TapTarget onClick={onClose} label="Close image viewer" minTap={false}
-        style={{position:"absolute",top:8,right:8,fontSize:20,color:"#fff",opacity:0.8,minWidth:44,minHeight:44,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:8}}>
-        <span aria-hidden="true">✕</span>
-      </TapTarget>
-      <img src={url} alt="Full size view" style={{maxWidth:"100%",maxHeight:"100%",objectFit:"contain",borderRadius:8}} onClick={e=>e.stopPropagation()}/>
-    </div>
-  );
-};
 
 // Share sheet for movies and reviews
-const ShareSheet = ({ item, onClose, showToast }) => {
-  const containerRef = useRef(null);
-  useFocusTrap(containerRef, !!item, onClose);
-  if (!item) return null;
-  const link = item.type==="movie"
-    ? `https://rated.app/movie/${item.id}`
-    : `https://rated.app/review/${item.id}`;
-  const title = item.type==="movie" ? `${item.title} on RATED` : `Review of ${item.movie_title} on RATED`;
-  // Copy link → toast confirmation. Handles clipboard failures gracefully.
-  const copyLink = async () => {
-    haptic("light");
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(link);
-        showToast && showToast("Link copied","ok");
-      } else {
-        showToast && showToast("Couldn't copy — clipboard unavailable","err");
-      }
-    } catch (e) {
-      showToast && showToast("Couldn't copy — clipboard unavailable","err");
-    }
-    onClose();
-  };
-  // Share via native sheet, or fall back to copy
-  const shareNative = async () => {
-    haptic("light");
-    try {
-      if (navigator.share) {
-        await navigator.share({ title, url: link });
-        onClose();
-        return;
-      }
-    } catch (e) { if (e?.name === "AbortError") { onClose(); return; } }
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(link);
-        showToast && showToast("Link copied","ok");
-      }
-    } catch (e) {}
-    onClose();
-  };
-  // Send as SMS with prefilled body
-  const sendSms = () => {
-    haptic("light");
-    const body = encodeURIComponent(`${title}: ${link}`);
-    window.location.href = `sms:?&body=${body}`;
-    onClose();
-  };
-  return (
-    <div ref={containerRef} role="dialog" aria-modal="true" aria-labelledby="share-sheet-title"
-         onClick={onClose}
-         style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.8)",zIndex:60,display:"flex",flexDirection:"column",justifyContent:"flex-end"}}>
-      <div onClick={e=>e.stopPropagation()} style={{background:W.bg,borderRadius:"20px 20px 0 0",padding:"18px 22px 28px"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-          <div id="share-sheet-title" style={{display:"flex",alignItems:"center",gap:8,fontSize:13,fontWeight:900,color:W.text,fontFamily:"monospace"}}>
-            <ShareIcon size={14} color={W.text}/> Share
-          </div>
-          <TapTarget onClick={onClose} label="Close share sheet" minTap={false}
-            style={{fontSize:16,color:W.dim,minWidth:40,minHeight:40,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:6}}>
-            <span aria-hidden="true">✕</span>
-          </TapTarget>
-        </div>
-        <div style={{fontSize:10,color:W.dim,fontFamily:"monospace",marginBottom:12,lineHeight:1.5}}>{title}</div>
-        <div style={{display:"flex",flexDirection:"column",gap:6}}>
-          {[
-            {icon:"🔗",label:"Copy Link",action:copyLink},
-            {icon:<ShareIcon size={18} color={W.text}/>,label:"Share via...",action:shareNative},
-            {icon:"💬",label:"Send as Message",action:sendSms},
-          ].map(o=>(
-            <TapTarget key={o.label} onClick={o.action} label={o.label} minTap={false}
-              style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",background:W.card,borderRadius:12,border:`1px solid ${W.border}`,minHeight:48}}>
-              <span aria-hidden="true" style={{fontSize:18,display:"flex",alignItems:"center",justifyContent:"center",width:24}}>{o.icon}</span>
-              <span style={{fontSize:12,fontWeight:600,color:W.text,fontFamily:"monospace"}}>{o.label}</span>
-            </TapTarget>
-          ))}
-        </div>
-        <TapTarget onClick={onClose} label="Cancel" minTap={false}
-          style={{marginTop:12,padding:"11px",textAlign:"center",fontSize:11,color:W.dim,fontFamily:"monospace",display:"flex",alignItems:"center",justifyContent:"center",minHeight:40}}>
-          Cancel
-        </TapTarget>
-      </div>
-    </div>
-  );
-};
 
 // YouTube trailer modal. Embeds the video via an iframe. Autoplay may be blocked
 // on some platforms — user can tap play inside the iframe as fallback.
-const TrailerModal = ({ videoKey, title, onClose }) => {
-  const containerRef = useRef(null);
-  useFocusTrap(containerRef, true, onClose);
-  useEffect(()=>{
-    // Lock background scroll while the modal is open
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return ()=>{ document.body.style.overflow = prevOverflow; };
-  },[]);
-  if (!videoKey) return null;
-  return (
-    <div ref={containerRef} role="dialog" aria-modal="true" aria-label={`Trailer for ${title||"movie"}`}
-         onClick={onClose}
-         style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.92)",zIndex:80,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"0 10px"}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",width:"100%",maxWidth:480,padding:"0 6px",marginBottom:10}}>
-        <div id="trailer-title" style={{fontSize:10,color:"#fff",fontFamily:"monospace",fontWeight:700,opacity:0.85,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1,marginRight:12}}>
-          ▶ {title||"Trailer"}
-        </div>
-        <TapTarget onClick={(e)=>{e.stopPropagation();onClose();}} label="Close trailer" minTap={false}
-          style={{color:"#fff",fontSize:20,padding:"8px 12px",opacity:0.9,minWidth:44,minHeight:44,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:8}}>
-          <span aria-hidden="true">✕</span>
-        </TapTarget>
-      </div>
-      <div onClick={(e)=>e.stopPropagation()} style={{width:"100%",maxWidth:480,aspectRatio:"16/9",borderRadius:12,overflow:"hidden",background:"#000",boxShadow:"0 12px 40px rgba(0,0,0,0.8)"}}>
-        <iframe
-          width="100%" height="100%"
-          src={`https://www.youtube.com/embed/${videoKey}?autoplay=1&rel=0&modestbranding=1`}
-          title={`${title||"Trailer"} — YouTube video player`}
-          frameBorder="0"
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-          allowFullScreen
-          style={{border:0,display:"block"}}
-        />
-      </div>
-      <div style={{fontSize:9,color:"#fff",fontFamily:"monospace",opacity:0.5,marginTop:10,letterSpacing:1}}>Tap outside or press Esc to close</div>
-    </div>
-  );
-};
 
 // Poster lives in ./components/Poster, useFocusTrap in ./lib/hooks.
 // TapTarget lives in ./components/TapTarget — see imports at top of file.
@@ -573,65 +141,12 @@ const TrailerModal = ({ videoKey, title, onClose }) => {
 // Shared invite-link hook. Returns a stable set of handlers for sharing the
 // user's invite URL via native share sheet / clipboard / email / SMS.
 // Used by both the Find Friends modal (Search) and Settings → Find Friends.
-const useShareInvite = (username, showToast) => {
-  const inviteUrl = `https://rated.app/invite/${username||"rated"}`;
-  const inviteMsg = `Join me on RATED — the movie-ranking app: ${inviteUrl}`;
-  // Native share sheet → clipboard fallback
-  const shareInvite = useCallback(async () => {
-    haptic("medium");
-    try {
-      if (typeof navigator !== "undefined" && navigator.share) {
-        await navigator.share({ title: "Join me on RATED", text: inviteMsg, url: inviteUrl });
-        return true;
-      }
-    } catch (e) {
-      if (e?.name === "AbortError") return false; // user cancelled the share sheet
-    }
-    try {
-      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(inviteUrl);
-        showToast && showToast("Invite link copied to clipboard", "ok");
-        return true;
-      }
-    } catch (e) {}
-    showToast && showToast("Couldn't share — your browser doesn't support this", "err");
-    return false;
-  }, [inviteUrl, inviteMsg, showToast]);
-  const emailInvite = useCallback(() => {
-    haptic("light");
-    const subject = encodeURIComponent("Join me on RATED");
-    const body = encodeURIComponent(inviteMsg);
-    window.location.href = `mailto:?subject=${subject}&body=${body}`;
-  }, [inviteMsg]);
-  const smsInvite = useCallback(() => {
-    haptic("light");
-    const body = encodeURIComponent(inviteMsg);
-    window.location.href = `sms:?&body=${body}`;
-  }, [inviteMsg]);
-  return { inviteUrl, inviteMsg, shareInvite, emailInvite, smsInvite };
-};
 
-const Btn = ({ children, accent, full, small, onClick, label, disabled }) => (
-  <TapTarget onClick={onClick} label={label||(typeof children==="string"?children:undefined)} disabled={disabled} minTap={false}
-    style={{background:accent?W.accent:"transparent",border:accent?"none":`1px solid ${W.border}`,color:accent?"#fff":W.dim,borderRadius:12,padding:small?"8px 14px":"12px 20px",fontSize:small?10:12,fontWeight:700,textAlign:"center",width:full?"100%":"auto",fontFamily:"monospace",display:"inline-flex",alignItems:"center",justifyContent:"center",minHeight:small?36:44,opacity:disabled?0.5:1}}>
-    {children}
-  </TapTarget>
-);
 
 // NavBar + ScreenWithNav (with per-screen scroll persistence) live in
 // ./components/ScreenWithNav.
 
-const Badge = ({ color, children }) => (
-  <span style={{padding:"2px 7px",borderRadius:4,fontSize:7,fontWeight:900,fontFamily:"monospace",
-    background:color==="red"?W.accentDim:color==="gold"?W.goldDim:color==="green"?W.greenDim:color==="blue"?W.blueDim:color==="orange"?W.orangeDim:W.purpleDim,
-    color:color==="red"?W.accent:color==="gold"?W.gold:color==="green"?W.green:color==="blue"?W.blue:color==="orange"?W.orange:W.purple,
-    border:`1px solid ${color==="red"?W.accent+"33":color==="gold"?W.gold+"33":color==="green"?W.green+"33":color==="blue"?W.blue+"33":color==="orange"?W.orange+"33":W.purple+"33"}`}}>{children}</span>
-);
 
-const calcElo = (wElo,lElo,k=32) => {
-  const exp=1/(1+Math.pow(10,(lElo-wElo)/400));
-  return [Math.round(wElo+k*(1-exp)),Math.round(lElo+k*(0-(1-exp)))];
-};
 
 // daysUntil lives in ./lib/time.
 
@@ -643,14 +158,6 @@ const calcElo = (wElo,lElo,k=32) => {
 
 // Return a Date at 00:00:00 on the Monday of the week containing `ts`.
 // Monday is ISO weekday 1 (JS getDay: Sun=0, Mon=1, ... Sat=6).
-const getMondayOfWeek = (ts) => {
-  const d = new Date(ts);
-  d.setHours(0, 0, 0, 0);
-  const dayOfWeek = d.getDay(); // 0..6
-  const daysSinceMonday = (dayOfWeek + 6) % 7; // Mon→0, Tue→1, ..., Sun→6
-  d.setDate(d.getDate() - daysSinceMonday);
-  return d;
-};
 
 // Walk backward from this week, counting consecutive weeks with ≥1 rank.
 // Stops at the first empty week.
@@ -660,44 +167,8 @@ const getMondayOfWeek = (ts) => {
 //   status: "active"       — ranked this week, streak fully healthy
 //           "at-risk"      — last week had rank, this week doesn't (rank by Sunday or it dies)
 //           "none"         — no rank in 2+ weeks, streak is 0
-const computeStreak = (rankHistory) => {
-  if (!rankHistory || rankHistory.length === 0) {
-    return { count: 0, status: "none" };
-  }
-  // Build a Set of "week keys" (Monday ms) that have at least one rank
-  const weekSet = new Set(rankHistory.map(r => getMondayOfWeek(r.ts).getTime()));
-  const thisWeek = getMondayOfWeek(Date.now()).getTime();
-  const msPerWeek = 7 * 24 * 60 * 60 * 1000;
-  const thisWeekRanked = weekSet.has(thisWeek);
-  const lastWeekRanked = weekSet.has(thisWeek - msPerWeek);
-  // Determine starting point: this week (if ranked) OR last week (grace period)
-  let startWeek;
-  let status;
-  if (thisWeekRanked) {
-    startWeek = thisWeek;
-    status = "active";
-  } else if (lastWeekRanked) {
-    startWeek = thisWeek - msPerWeek;
-    status = "at-risk";
-  } else {
-    return { count: 0, status: "none" };
-  }
-  // Count consecutive weeks working backward from startWeek
-  let count = 0;
-  let cursor = startWeek;
-  while (weekSet.has(cursor)) {
-    count++;
-    cursor -= msPerWeek;
-  }
-  return { count, status };
-};
 
 // Format a release date nicely (e.g., "May 15, 2026")
-const formatReleaseDate = (isoDate) => {
-  if (!isoDate) return "";
-  const d = new Date(isoDate+"T00:00:00");
-  return d.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
-};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONTENT MODERATION — profanity + rate limits
@@ -707,125 +178,12 @@ const formatReleaseDate = (isoDate) => {
 
 // Rate limit tracker. In production this would live server-side (Redis).
 // We use in-memory counters in the App shell.
-const FOLLOW_LIMIT_PER_HOUR = 200;
-const FOLLOW_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
 // ─────────────────────────────────────────────────────────────────────────────
 // REPORT/BLOCK MENU — reusable, mounts as a dot trigger + sheet
 // ─────────────────────────────────────────────────────────────────────────────
 
-const REPORT_REASONS = [
-  {key:"spam",        label:"Spam",                  desc:"Repetitive, misleading, or promotional"},
-  {key:"harassment",  label:"Harassment or bullying",desc:"Targeted abuse or unwanted contact"},
-  {key:"hate",        label:"Hate speech",           desc:"Attacks a protected group or identity"},
-  {key:"inappropriate",label:"Inappropriate content",desc:"Sexual, violent, or graphic material"},
-  {key:"impersonation",label:"Impersonation",        desc:"Pretending to be someone else"},
-  {key:"other",       label:"Something else",        desc:"Doesn't fit the categories above"},
-];
 
-const ReportBlockMenu = ({ targetType, targetId, targetLabel, targetUser, onReport, onBlock, blockedUsers, size="sm" }) => {
-  const [open,setOpen]=useState(false);
-  const [stage,setStage]=useState("menu"); // menu | report | report-confirm | block-confirm
-  const [reason,setReason]=useState(null);
-
-  const close=()=>{setOpen(false);setStage("menu");setReason(null);};
-  const isBlocked=targetUser&&blockedUsers?.has(targetUser);
-
-  // Trigger size matches the adjacent share button (32×32 circle) so all action
-  // buttons in a feed-card row line up at the same visual weight.
-  const triggerSize = size === "md" ? 36 : 32;
-  const iconSize = size === "md" ? 16 : 14;
-
-  return (
-    <>
-      <TapTarget onClick={e=>{e.stopPropagation();setOpen(true);}} label="More options" minTap={false}
-        style={{display:"flex",alignItems:"center",justifyContent:"center",width:triggerSize,height:triggerSize,borderRadius:"50%",background:W.card,border:`1px solid ${W.border}`,fontSize:iconSize,color:W.dim,flexShrink:0,lineHeight:1,userSelect:"none"}}>
-        <span aria-hidden="true">⋯</span>
-      </TapTarget>
-      {open&&<div onClick={close} style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.7)",zIndex:80,display:"flex",flexDirection:"column",justifyContent:"flex-end"}}>
-        <div onClick={e=>e.stopPropagation()} style={{background:W.bg,borderRadius:"20px 20px 0 0",padding:"16px 20px 24px",borderTop:`1px solid ${W.border}`}}>
-
-          {stage==="menu"&&<>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-              <div style={{fontSize:12,fontWeight:800,color:W.text,fontFamily:"monospace"}}>
-                {targetUser||(targetType==="review"?"Review":targetType==="feed"?"Post":targetType==="comment"?"Comment":"Item")}
-              </div>
-              <TapTarget onClick={close} label="Close menu" minTap={false}
-                style={{fontSize:16,color:W.dim,minWidth:32,minHeight:32,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:6}}>
-                <span aria-hidden="true">✕</span>
-              </TapTarget>
-            </div>
-            <div style={{display:"flex",flexDirection:"column",gap:6}}>
-              <TapTarget onClick={()=>setStage("report")} label="Report this content" minTap={false}
-                style={{padding:"10px 14px",background:W.card,border:`1px solid ${W.border}`,borderRadius:10,display:"flex",alignItems:"center",minHeight:40}}>
-                <span style={{fontSize:12,fontWeight:700,color:W.text,fontFamily:"monospace"}}>Report</span>
-              </TapTarget>
-              {targetUser&&!isBlocked&&<TapTarget onClick={()=>setStage("block-confirm")} label={`Block ${targetUser}`} minTap={false}
-                style={{padding:"10px 14px",background:W.card,border:`1px solid ${W.border}`,borderRadius:10,display:"flex",alignItems:"center",minHeight:40}}>
-                <span style={{fontSize:12,fontWeight:700,color:W.accent,fontFamily:"monospace"}}>Block {targetUser}</span>
-              </TapTarget>}
-              {targetUser&&isBlocked&&<div style={{padding:"10px 14px",background:W.card,border:`1px solid ${W.border}`,borderRadius:10,display:"flex",alignItems:"center",minHeight:40}}>
-                <span style={{fontSize:12,fontWeight:700,color:W.dim,fontFamily:"monospace"}}>Already blocked</span>
-              </div>}
-            </div>
-          </>}
-
-          {stage==="report"&&<>
-            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
-              <TapTarget onClick={()=>setStage("menu")} label="Back to menu" minTap={false}
-                style={{fontSize:11,color:W.dim,fontFamily:"monospace",padding:"6px 4px",minHeight:32,display:"flex",alignItems:"center"}}>
-                ← Back
-              </TapTarget>
-              <div style={{flex:1,textAlign:"center",fontSize:12,fontWeight:800,color:W.text,fontFamily:"monospace"}}>Why report this?</div>
-              <div style={{width:40}}/>
-            </div>
-            <div style={{display:"flex",flexDirection:"column",gap:4}}>
-              {REPORT_REASONS.map(r=>(
-                <TapTarget key={r.key} onClick={()=>{setReason(r);setStage("report-confirm");}} label={`Report reason: ${r.label}`} minTap={false}
-                  style={{padding:"9px 14px",background:W.card,border:`1px solid ${W.border}`,borderRadius:10,display:"flex",alignItems:"center",minHeight:36}}>
-                  <span style={{fontSize:12,fontWeight:700,color:W.text,fontFamily:"monospace"}}>{r.label}</span>
-                </TapTarget>
-              ))}
-            </div>
-          </>}
-
-          {stage==="report-confirm"&&reason&&<>
-            <div style={{textAlign:"center",padding:"6px 0 12px"}}>
-              <div style={{fontSize:28,marginBottom:6}}>🚩</div>
-              <div style={{fontSize:13,fontWeight:800,color:W.text,fontFamily:"monospace",marginBottom:4}}>Submit this report?</div>
-              <div style={{fontSize:10,color:W.dim,fontFamily:"monospace",lineHeight:1.5}}>
-                Reason: <span style={{color:W.text,fontWeight:700}}>{reason.label}</span> · Your identity stays private
-              </div>
-            </div>
-            <div style={{display:"flex",gap:8}}>
-              <TapTarget onClick={()=>setStage("report")} label="Cancel" minTap={false}
-                style={{flex:1,padding:"11px",textAlign:"center",fontSize:11,fontWeight:700,color:W.dim,fontFamily:"monospace",background:W.card,border:`1px solid ${W.border}`,borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",minHeight:40}}>Cancel</TapTarget>
-              <TapTarget onClick={()=>{onReport&&onReport(targetType,targetId,targetLabel,reason);close();}} label="Submit report" minTap={false}
-                style={{flex:1,padding:"11px",textAlign:"center",fontSize:11,fontWeight:700,color:"#fff",fontFamily:"monospace",background:W.accent,borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",minHeight:40}}>Submit Report</TapTarget>
-            </div>
-          </>}
-
-          {stage==="block-confirm"&&<>
-            <div style={{textAlign:"center",padding:"6px 0 12px"}}>
-              <div style={{fontSize:28,marginBottom:6}}>🚫</div>
-              <div style={{fontSize:13,fontWeight:800,color:W.text,fontFamily:"monospace",marginBottom:6}}>Block {targetUser}?</div>
-              <div style={{fontSize:10,color:W.dim,fontFamily:"monospace",lineHeight:1.5}}>
-                You won't see their posts. They can't see yours. Unblock anytime in Settings.
-              </div>
-            </div>
-            <div style={{display:"flex",gap:8}}>
-              <TapTarget onClick={()=>setStage("menu")} label="Cancel" minTap={false}
-                style={{flex:1,padding:"11px",textAlign:"center",fontSize:11,fontWeight:700,color:W.dim,fontFamily:"monospace",background:W.card,border:`1px solid ${W.border}`,borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",minHeight:40}}>Cancel</TapTarget>
-              <TapTarget onClick={()=>{onBlock&&onBlock(targetUser);close();}} label={`Block ${targetUser}`} minTap={false}
-                style={{flex:1,padding:"11px",textAlign:"center",fontSize:11,fontWeight:700,color:"#fff",fontFamily:"monospace",background:W.accent,borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",minHeight:40}}>Block</TapTarget>
-            </div>
-          </>}
-
-        </div>
-      </div>}
-    </>
-  );
-};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOGIN SCREEN
@@ -839,13 +197,6 @@ const ReportBlockMenu = ({ targetType, targetId, targetLabel, targetUser, onRepo
 // HOME SCREEN
 // ─────────────────────────────────────────────────────────────────────────────
 
-const GLOBAL_FEED = [
-  {id:"g-001",type:"rating",user:"@cinephile99",avatar:"C",action:"rated",movie_title:"Parasite",movie_id:"m-002",rating:10,time:"5m",likes:34,liked:false},
-  {id:"g-002",type:"ranking",user:"@reeltalks",avatar:"R",action:"ranked",movie_title:"Whiplash",movie_id:"m-004",rating:10,preview:"New #1 · dethroned Interstellar",rank_position:1,time:"22m",likes:18,liked:false},
-  {id:"g-003",type:"rating",user:"@filmfreak",avatar:"F",action:"rated",movie_title:"The Dark Knight",movie_id:"m-003",rating:10,time:"1h",likes:9,liked:false},
-  {id:"g-004",type:"review",user:"@lina",avatar:"L",action:"reviewed",movie_title:"RRR",movie_id:"m-005",preview:"S.S. Rajamouli delivers pure spectacle unlike anything Hollywood would greenlight...",rating:9,time:"2h",likes:27,liked:false},
-  {id:"g-005",type:"streak",user:"@cinephile99",avatar:"C",action:"hit a 34-week streak 💎",time:"4h",likes:89,liked:false},
-];
 
 const HomeScreen = ({ onNav, onSelectMovie, session, userId, username, unreadCount=0, blockedUsers=new Set(), blockUser, reportContent, rateLimitedFollow, followingHandles=new Set(), toggleFollowHandle, onSelectUser, userFeedItems=[], onRank, savedMovies=new Set(), toggleSavedMovie, feedLikes={}, toggleFeedLike, showToast }) => {
   const [loaded,setLoaded]=useState(false);
@@ -1241,286 +592,11 @@ const HomeScreen = ({ onNav, onSelectMovie, session, userId, username, unreadCou
 // When `existing` is passed (an object with {ts, text, rating, movie_id, movie_title}),
 // the modal pre-fills and routes submission to onSubmit(updatedFields, existing.ts).
 // For new reviews, existing is undefined and onSubmit receives just the review object.
-const ReviewModal = ({ movie, onClose, onSubmit, existing }) => {
-  const isEdit = !!existing;
-  const [text,setText]=useState(existing?.text||"");
-  const [rating,setRating]=useState(existing?.rating||0);
-  const [hover,setHover]=useState(0);
-  const [submitted,setSubmitted]=useState(false);
-  const [error,setError]=useState(null);
-  const submit=()=>{
-    if(!rating||!text.trim())return;
-    // Hard block on profanity in review text
-    if(checkProfanity(text)){
-      setError("Review contains inappropriate language. Please revise it.");
-      return;
-    }
-    setError(null);
-    if (isEdit) {
-      onSubmit && onSubmit(text.trim(), rating);
-    } else {
-      onSubmit && onSubmit({movie_id:movie.id, movie_title:movie.title, rating, text:text.trim(), time:"just now"});
-    }
-    setSubmitted(true);
-    setTimeout(onClose,1200);
-  };
-  return (
-    <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.85)",zIndex:50,display:"flex",flexDirection:"column",justifyContent:"flex-end"}}>
-      <div style={{background:W.bg,borderRadius:"20px 20px 0 0",padding:"20px 22px 32px",display:"flex",flexDirection:"column",gap:14}}>
-        {submitted?<div style={{textAlign:"center",padding:"20px 0"}}><div style={{fontSize:32,marginBottom:8}}>✓</div><div style={{fontSize:14,fontWeight:900,color:W.green,fontFamily:"monospace"}}>{isEdit?"Review Updated":"Review Posted!"}</div></div>:<>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <div style={{fontSize:13,fontWeight:900,color:W.text,fontFamily:"monospace"}}>✎ {isEdit?"EDIT REVIEW":"WRITE REVIEW"}</div>
-            <div onClick={onClose} style={{fontSize:18,color:W.dim,cursor:"pointer"}}>✕</div>
-          </div>
-          <div style={{display:"flex",gap:10,alignItems:"center"}}>
-            <Poster url={movie.poster_url} title={movie.title} w={40} h={56} radius={6}/>
-            <div><div style={{fontSize:12,fontWeight:700,color:W.text,fontFamily:"monospace"}}>{movie.title}</div><div style={{fontSize:9,color:W.dim,fontFamily:"monospace"}}>{movie.release_year} · {movie.directors?.[0]?.name}</div></div>
-          </div>
-          <div>
-            <div style={{fontSize:9,color:W.dim,fontFamily:"monospace",marginBottom:6,letterSpacing:1}}>YOUR RATING</div>
-            <div style={{display:"flex",gap:3}}>
-              {[1,2,3,4,5,6,7,8,9,10].map(n=>(
-                <div key={n} onClick={()=>setRating(n)} onMouseEnter={()=>setHover(n)} onMouseLeave={()=>setHover(0)}
-                  style={{flex:1,textAlign:"center",padding:"5px 0",borderRadius:6,fontSize:10,fontWeight:900,fontFamily:"monospace",cursor:"pointer",background:(hover||rating)>=n?W.goldDim:W.card,border:`1px solid ${(hover||rating)>=n?W.gold:W.border}`,color:(hover||rating)>=n?W.gold:W.dim}}>{n}</div>
-              ))}
-            </div>
-            {rating>0&&<div style={{fontSize:9,color:W.gold,fontFamily:"monospace",marginTop:4,textAlign:"center"}}>★ {rating}/10</div>}
-          </div>
-          <div>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-              <div style={{fontSize:9,color:W.dim,fontFamily:"monospace",letterSpacing:1}}>YOUR REVIEW</div>
-              <div style={{fontSize:9,color:text.length>=450?W.accent:W.dim,fontFamily:"monospace"}}>{text.length} / 500</div>
-            </div>
-            <textarea value={text} onChange={e=>{setText(e.target.value);setError(null);}} placeholder="What did you think? Be honest..." maxLength={500}
-              onKeyDown={e=>{ if(e.key==="Enter" && (e.metaKey||e.ctrlKey) && rating && text.trim()){ e.preventDefault(); submit(); } }}
-              style={{width:"100%",minHeight:80,background:W.card,border:`1px solid ${error?W.accent:W.border}`,borderRadius:12,padding:"10px 14px",fontSize:11,fontFamily:"monospace",outline:"none",resize:"none",lineHeight:1.6}}/>
-          </div>
-          {error&&<div style={{padding:"8px 10px",borderRadius:8,background:W.accentDim,border:`1px solid ${W.accent}`,fontSize:10,color:W.accent,fontFamily:"monospace",lineHeight:1.5}}>✗ {error}</div>}
-          <div onClick={submit} style={{background:rating&&text.trim()?W.accent:W.card,border:`1px solid ${rating&&text.trim()?W.accent:W.border}`,color:rating&&text.trim()?"#fff":W.dim,borderRadius:12,padding:"12px",fontSize:12,fontWeight:700,textAlign:"center",fontFamily:"monospace",cursor:rating&&text.trim()?"pointer":"default"}}>{isEdit?"SAVE CHANGES":"POST REVIEW"}</div>
-        </>}
-      </div>
-    </div>
-  );
-};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MOVIE DETAIL SCREEN
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MovieDetailScreen = ({ movie, onBack, onRank, isUpcoming, watchlist, onToggleWatchlist, followingHandles=new Set(), onSelectUser, onSubmitReview, savedMovies=new Set(), toggleSavedMovie, showToast }) => {
-  const [loaded,setLoaded]=useState(false);
-  const [showReview,setShowReview]=useState(false);
-  const [viewerImage,setViewerImage]=useState(null);
-  const [shareOpen,setShareOpen]=useState(false);
-  const [trailerOpen,setTrailerOpen]=useState(false);
-  const edgeSwipe = useEdgeSwipeBack(onBack);
-  // For TMDB movies, fetch the full detail (cast, trailers, backdrop) on open.
-  // Local hardcoded movies already have this data.
-  const [enrichedMovie,setEnrichedMovie]=useState(movie);
-  useEffect(()=>{
-    setEnrichedMovie(movie);
-    if (!movie) return;
-    let cancelled = false;
-    if (movie.tmdb_id) {
-      tmdbMovieDetail(movie.tmdb_id).then(full=>{
-        if (!cancelled && full) {
-          // Defensive merge: spread original first, then full, then explicitly
-          // re-apply any URL fields that might have been nulled out by the TMDB
-          // detail endpoint (some entries are missing poster_path/backdrop_path
-          // in the detail response even when they're present in the list response).
-          // Preserve the app's id (tmdb-123) so comparisons with savedMovies/watchlist still work.
-          setEnrichedMovie({
-            ...movie,
-            ...full,
-            id: movie.id,
-            poster_url: full.poster_url || movie.poster_url,
-            backdrop_url: full.backdrop_url || movie.backdrop_url,
-          });
-        }
-      });
-    }
-    return ()=>{ cancelled = true; };
-  },[movie?.id, movie?.tmdb_id]);
-  const m = enrichedMovie || movie;
-  // saved derives from the global set — updates reflect everywhere
-  const saved = movie ? savedMovies.has(movie.id) : false;
-  const setSaved = (val) => {
-    if (!movie || !toggleSavedMovie) return;
-    if (saved !== val) toggleSavedMovie(movie.id);
-  };
-  useEffect(()=>{setLoaded(false);setShowReview(false);setTrailerOpen(false);setTimeout(()=>setLoaded(true),300);},[movie?.id]);
-  if(!movie) return null;
-  if(!loaded) return (
-    <div style={{padding:0}}>
-      <Skeleton w="100%" h={180} radius={0}/>
-      <div style={{padding:"48px 22px 28px",display:"flex",flexDirection:"column",gap:10}}>
-        <Skeleton w="70%" h={18}/>
-        <Skeleton w="40%" h={10}/>
-        <div style={{display:"flex",gap:6,marginTop:4}}>
-          <Skeleton w={60} h={44} radius={10}/>
-          <Skeleton w={60} h={44} radius={10}/>
-          <Skeleton w={60} h={44} radius={10}/>
-        </div>
-        <Skeleton w="100%" h={10} style={{marginTop:8}}/>
-        <Skeleton w="100%" h={10}/>
-        <Skeleton w="80%" h={10}/>
-      </div>
-    </div>
-  );
-  const trailer=m.trailers?.find(t=>t.is_primary)||m.trailers?.[0];
-  const inWatchlist=watchlist?watchlist.has(m.id):false;
-  return (
-    <div {...edgeSwipe} style={{position:"relative"}}>
-      {showReview&&<ReviewModal movie={m} onClose={()=>setShowReview(false)} onSubmit={onSubmitReview}/>}
-      <ImageViewer url={viewerImage} onClose={()=>setViewerImage(null)}/>
-      {shareOpen&&<ShareSheet item={{type:"movie",id:m.id,title:m.title}} onClose={()=>setShareOpen(false)} showToast={showToast}/>}
-      {trailerOpen&&trailer&&trailer.video_key&&<TrailerModal videoKey={trailer.video_key} title={m.title} onClose={()=>setTrailerOpen(false)}/>}
-      <div style={{position:"relative",height:180,background:`linear-gradient(180deg,#1a1a28,${W.bg})`,overflow:"hidden"}}>
-        {m.backdrop_url&&<img src={m.backdrop_url} alt="" style={{width:"100%",height:"100%",objectFit:"cover",opacity:0.3,cursor:"pointer"}} onClick={()=>{haptic("light");setViewerImage(m.backdrop_url);}} onError={e=>e.target.style.display="none"}/>}
-        <div style={{position:"absolute",top:10,left:16,fontSize:11,color:W.dim,fontFamily:"monospace",cursor:"pointer"}} onClick={()=>{haptic("light");onBack();}}>← Back</div>
-        <TapTarget onClick={()=>{haptic("medium");setShareOpen(true);}} label={`Share ${m.title}`} minTap={false}
-          style={{position:"absolute",top:10,right:16,width:32,height:32,borderRadius:"50%",background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center"}}>
-          <ShareIcon size={14} color="#fff"/>
-        </TapTarget>
-        {trailer&&trailer.video_key&&<div onClick={()=>{haptic("medium");setTrailerOpen(true);}} style={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",display:"flex",flexDirection:"column",alignItems:"center",gap:4,cursor:"pointer"}}>
-          <div style={{width:44,height:44,background:`${W.accent}cc`,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,color:"#fff",boxShadow:"0 4px 12px rgba(0,0,0,0.4)"}}>▶</div>
-          <span style={{fontSize:9,color:"#fff",fontFamily:"monospace",fontWeight:600,textShadow:"0 1px 6px rgba(0,0,0,0.8)"}}>PLAY TRAILER</span>
-        </div>}
-        <div style={{position:"absolute",bottom:-40,left:22}}><Poster url={m.poster_url} title={m.title} w={72} h={100} radius={10} onClick={()=>{haptic("light");setViewerImage(m.poster_url);}}/></div>
-      </div>
-      <div style={{padding:"48px 22px 28px",display:"flex",flexDirection:"column",gap:8}}>
-        <div>
-          <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
-            <span style={{fontSize:18,fontWeight:900,color:W.text,fontFamily:"monospace",letterSpacing:-0.5}}>{m.title}</span>
-            {m.is_international&&<Badge color="purple">{m.original_language?.toUpperCase()}</Badge>}
-            {isUpcoming&&<Badge color="orange">UPCOMING</Badge>}
-          </div>
-          {m.original_title&&m.original_title!==m.title&&<div style={{fontSize:10,color:W.dim,fontFamily:"monospace",fontStyle:"italic"}}>{m.original_title}</div>}
-          <div style={{fontSize:10,color:W.dim,fontFamily:"monospace",marginTop:3}}>
-            {m.release_year}{m.runtime_minutes?` · ${Math.floor(m.runtime_minutes/60)}h ${m.runtime_minutes%60}m`:""}{m.content_rating?` · ${m.content_rating}`:""}
-            {m.directors?.[0]?.name&&` · ${m.directors[0].name}`}
-          </div>
-          {isUpcoming&&m.release_date&&(()=>{
-            const d=daysUntil(m.release_date);
-            const label=d>0?`${d}d away`:d===0?"TODAY":"Released";
-            return <div style={{fontSize:10,color:W.accent,fontFamily:"monospace",fontWeight:700,marginTop:4}}>📅 {formatReleaseDate(m.release_date)} · {label}</div>;
-          })()}
-          {isUpcoming&&m.must_see_reason&&<div style={{fontSize:10,color:W.gold,fontFamily:"monospace",marginTop:3}}>{m.must_see_reason}</div>}
-        </div>
-        {!isUpcoming&&<div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-          {m.global_rank&&<div style={{background:W.accentDim,border:`1px solid ${W.accent}33`,borderRadius:10,padding:"6px 12px",textAlign:"center"}}><div style={{fontSize:16,fontWeight:900,color:W.accent,fontFamily:"monospace"}}>#{m.global_rank}</div><div style={{fontSize:7,color:W.dim,fontFamily:"monospace"}}>RATED</div></div>}
-          {m.imdb_rating&&<div style={{background:W.goldDim,border:`1px solid ${W.gold}33`,borderRadius:10,padding:"6px 12px",textAlign:"center"}}><div style={{fontSize:16,fontWeight:900,color:W.gold,fontFamily:"monospace"}}>{m.imdb_rating}</div><div style={{fontSize:7,color:W.dim,fontFamily:"monospace"}}>IMDb</div></div>}
-          {m.rotten_tomatoes_score&&<div style={{background:W.greenDim,border:`1px solid ${W.green}33`,borderRadius:10,padding:"6px 12px",textAlign:"center"}}><div style={{fontSize:16,fontWeight:900,color:W.green,fontFamily:"monospace"}}>{m.rotten_tomatoes_score}%</div><div style={{fontSize:7,color:W.dim,fontFamily:"monospace"}}>RT</div></div>}
-          {m.global_elo_score&&<div style={{background:W.blueDim,border:`1px solid ${W.blue}33`,borderRadius:10,padding:"6px 12px",textAlign:"center",flex:1}}><div style={{fontSize:16,fontWeight:900,color:W.blue,fontFamily:"monospace"}}>{m.global_elo_score}</div><div style={{fontSize:7,color:W.dim,fontFamily:"monospace"}}>ELO</div></div>}
-        </div>}
-        {isUpcoming&&m.anticipation_score&&<div style={{background:W.card,border:`1px solid ${W.border}`,borderRadius:12,padding:"10px 14px"}}>
-          <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><span style={{fontSize:9,color:W.dim,fontFamily:"monospace",letterSpacing:1}}>ANTICIPATION</span><span style={{fontSize:9,color:W.gold,fontFamily:"monospace",fontWeight:700}}>{m.anticipation_score}/1000</span></div>
-          <div style={{height:4,background:W.border,borderRadius:2}}><div style={{height:"100%",background:`linear-gradient(90deg,${W.gold},${W.accent})`,borderRadius:2,width:`${m.anticipation_score/10}%`}}/></div>
-          <div style={{fontSize:9,color:W.dim,fontFamily:"monospace",marginTop:6}}>👀 {m.watchlist_count?.toLocaleString()} watching</div>
-        </div>}
-        <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-          {m.genres?.map(g=><span key={g.name} style={{padding:"3px 10px",borderRadius:16,fontSize:9,fontFamily:"monospace",fontWeight:600,background:W.card,border:`1px solid ${W.border}`,color:W.dim}}>{g.name}</span>)}
-        </div>
-        <div style={{fontSize:11,color:W.dim,fontFamily:"monospace",lineHeight:1.6}}>
-          {m.synopsis?.slice(0,200)}{m.synopsis?.length>200&&<span style={{color:W.accent,fontWeight:600}}> read more</span>}
-        </div>
-        {isUpcoming?(
-          <div style={{display:"flex",gap:6}}>
-            <div style={{flex:1}} onClick={()=>onToggleWatchlist&&onToggleWatchlist(m.id)}>
-              <div style={{background:inWatchlist?W.blueDim:W.accent,border:inWatchlist?`1px solid ${W.blue}`:"none",color:inWatchlist?W.blue:"#fff",borderRadius:12,padding:"9px 14px",fontSize:10,fontWeight:700,textAlign:"center",fontFamily:"monospace",cursor:"pointer"}}>{inWatchlist?"◆ IN WATCHLIST":"+ ADD TO WATCHLIST"}</div>
-            </div>
-          </div>
-        ):(
-          <div style={{display:"flex",gap:6}}>
-            <div style={{flex:1}} onClick={()=>onRank&&onRank(m)}><Btn accent full small>⚡ RANK</Btn></div>
-            <div style={{flex:1}} onClick={()=>setSaved(!saved)}>
-              {/* SAVE button matches Btn's small full styling exactly so all three buttons
-                  in this row are the same height/padding. The only difference is color:
-                  blue tint when saved (◆), default border when not (◇). */}
-              <TapTarget label={saved?"Unsave movie":"Save movie"} minTap={false}
-                style={{background:saved?W.blueDim:"transparent",border:saved?`1px solid ${W.blue}`:`1px solid ${W.border}`,color:saved?W.blue:W.dim,borderRadius:12,padding:"8px 14px",fontSize:10,fontWeight:700,textAlign:"center",width:"100%",fontFamily:"monospace",display:"inline-flex",alignItems:"center",justifyContent:"center",minHeight:36}}>
-                {saved?"◆ SAVED":"◇ SAVE"}
-              </TapTarget>
-            </div>
-            <div style={{flex:1}} onClick={()=>setShowReview(true)}><Btn full small>✎ REVIEW</Btn></div>
-          </div>
-        )}
-        {m.cast?.length>0&&m.cast[0].name!=="TBA"&&<>
-          <div style={{fontSize:10,fontWeight:700,color:W.dim,fontFamily:"monospace",letterSpacing:1,marginTop:4}}>CAST</div>
-          <div style={{display:"flex",gap:10,overflowX:"auto"}}>
-            {m.cast.slice(0,5).map((c,i)=>(
-              <div key={i} style={{textAlign:"center",flexShrink:0}}>
-                <div style={{width:40,height:40,borderRadius:"50%",background:W.card,border:`1px solid ${W.border}`,margin:"0 auto 3px",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>👤</div>
-                <div style={{fontSize:9,fontWeight:700,color:W.text,fontFamily:"monospace",maxWidth:60,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.name.split(" ").pop()}</div>
-                <div style={{fontSize:8,color:W.dim,fontFamily:"monospace"}}>{c.character_name}</div>
-              </div>
-            ))}
-          </div>
-        </>}
-        {!isUpcoming&&<div style={{display:"flex",gap:8,marginTop:4}}>
-          {[{n:m.user_rating_count||0,l:"Ratings"},{n:m.review_count||0,l:"Reviews"},{n:m.watchlist_count||0,l:"Watchlisted"},{n:m.seen_count||0,l:"Seen"}].map((s,i)=>(
-            <div key={i} style={{flex:1,textAlign:"center",background:W.card,borderRadius:8,padding:"6px 4px",border:`1px solid ${W.border}`}}>
-              <div style={{fontSize:13,fontWeight:800,color:W.text,fontFamily:"monospace"}}>{s.n>999?`${(s.n/1000).toFixed(1)}k`:s.n}</div>
-              <div style={{fontSize:7,color:W.dim,fontFamily:"monospace"}}>{s.l}</div>
-            </div>
-          ))}
-        </div>}
-
-        {/* People you follow who rated/reviewed this movie */}
-        {!isUpcoming&&(()=>{
-          // Mock: for each followed user, derive a rating/review for this movie based on handle+movie hash
-          const followedActivity = Array.from(followingHandles).map(handle=>{
-            const prof = USER_PROFILES[handle];
-            if(!prof) return null;
-            // Pseudo-random: use char codes to decide if this user ranked this movie + what score
-            const seed = (handle+m.id).split("").reduce((a,c)=>a+c.charCodeAt(0),0);
-            const rated = seed % 3 !== 0; // 2/3 of followed users have rated this
-            if(!rated) return null;
-            const score = 6 + (seed % 5); // 6-10
-            const hasReview = seed % 4 === 0; // 1/4 also wrote a review
-            const reviewBits = ["A masterclass in tension and pacing.","Exactly the kind of film I come back to.","Beautifully shot, emotionally wrecking.","Overrated but still compelling.","Genre-defining performance from the lead.","Visually stunning but narratively uneven."];
-            const review = hasReview ? reviewBits[seed % reviewBits.length] : null;
-            return { handle, prof, score, review };
-          }).filter(Boolean);
-
-          if(followedActivity.length===0) return null;
-          return (
-            <>
-              <div style={{display:"flex",alignItems:"center",gap:6,marginTop:8}}>
-                <span style={{fontSize:10,fontWeight:700,color:W.dim,fontFamily:"monospace",letterSpacing:1}}>👥 PEOPLE YOU FOLLOW</span>
-                <span style={{fontSize:9,color:W.dim,fontFamily:"monospace"}}>· {followedActivity.length}</span>
-              </div>
-              <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                {followedActivity.map(a=>(
-                  <div key={a.handle} onClick={()=>onSelectUser&&onSelectUser(a.handle)} style={{background:W.card,border:`1px solid ${W.border}`,borderRadius:10,padding:"10px 12px",cursor:"pointer"}}>
-                    <div style={{display:"flex",alignItems:"center",gap:10}}>
-                      <div style={{width:32,height:32,borderRadius:"50%",background:W.border,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:W.text,fontFamily:"monospace",flexShrink:0}}>{a.prof.avatar}</div>
-                      <div style={{flex:1,minWidth:0}}>
-                        <div style={{display:"flex",alignItems:"center",gap:6}}>
-                          <span style={{fontSize:11,fontWeight:700,color:W.accent,fontFamily:"monospace"}}>{a.handle}</span>
-                          {a.prof.badge&&<span style={{fontSize:11}}>{a.prof.badge}</span>}
-                        </div>
-                        <div style={{fontSize:9,color:W.dim,fontFamily:"monospace",marginTop:1}}>{a.review?"reviewed":"ranked"}</div>
-                      </div>
-                      <div style={{textAlign:"right",flexShrink:0}}>
-                        <div style={{fontSize:14,fontWeight:900,color:W.gold,fontFamily:"monospace"}}>{a.score}/10</div>
-                      </div>
-                    </div>
-                    {a.review&&<div style={{fontSize:10,color:W.dim,fontFamily:"monospace",fontStyle:"italic",marginTop:6,lineHeight:1.5,borderTop:`1px solid ${W.border}`,paddingTop:6}}>"{a.review}"</div>}
-                  </div>
-                ))}
-              </div>
-            </>
-          );
-        })()}
-
-        {m.keywords&&<div style={{display:"flex",gap:4,flexWrap:"wrap",marginTop:2}}>
-          {m.keywords.slice(0,6).map(k=><span key={k} style={{padding:"2px 8px",borderRadius:10,fontSize:8,fontFamily:"monospace",background:W.card,border:`1px solid ${W.border}`,color:W.dim}}>#{k}</span>)}
-        </div>}
-      </div>
-    </div>
-  );
-};
 
 // UpcomingScreen lives in ./screens/UpcomingScreen, NotificationsScreen in
 // ./screens/NotificationsScreen.
@@ -2073,352 +1149,17 @@ const SettingsScreen = ({ onBack, username, displayName, userBio, profilePic, is
 // USER PROFILE SCREEN — shown when tapping a user on leaderboard
 // ─────────────────────────────────────────────────────────────────────────────
 
-const USER_PROFILES = {
-  "@cinephile99": {username:"cinephile99",avatar:"C",movies_rated:847,streak:34,badge:"💎",bio:"Seen everything twice.",followers:1204,following:88,isPrivate:false},
-  "@filmfreak":   {username:"filmfreak",  avatar:"F",movies_rated:612,streak:21,badge:"🏆",bio:"35mm or nothing.",followers:892,following:120,isPrivate:false},
-  "@maya":        {username:"maya",       avatar:"M",movies_rated:489,streak:12,badge:"🏆",bio:"Horror nerd. World cinema devotee.",followers:567,following:203,isPrivate:false},
-  "@reeltalks":   {username:"reeltalks",  avatar:"R",movies_rated:356,streak:8, badge:"🔥",bio:"Film criticism is my cardio.",followers:341,following:77,isPrivate:false},
-  "@jasonk":      {username:"jasonk",     avatar:"J",movies_rated:89, streak:7, badge:"🔥",bio:"Just getting started.",followers:12,following:34,isPrivate:false},
-  "@josh":        {username:"josh",       avatar:"J",movies_rated:76, streak:4, badge:"",  bio:"Drama and thrillers mainly.",followers:45,following:60,isPrivate:false},
-  "@lina":        {username:"lina",       avatar:"L",movies_rated:63, streak:3, badge:"",  bio:"International cinema fanatic.",followers:88,following:91,isPrivate:true},
-  "@carlos":      {username:"carlos",     avatar:"C",movies_rated:41, streak:1, badge:"",  bio:"New here, loving it.",followers:9,following:22,isPrivate:false},
-};
 
-const UserProfileScreen = ({ user, onBack, onSelectMovie, blockedUsers=new Set(), blockUser, reportContent, rateLimitedFollow, followingHandles=new Set(), toggleFollowHandle }) => {
-  const [followRequested,setFollowRequested]=useState(false);
-  const {confirm, ConfirmDialog} = useConfirm();
-  const isFollowing = followingHandles.has(user);
-  const p = USER_PROFILES[user] || {username:user?.replace("@",""),avatar:user?.[1]?.toUpperCase()||"?",movies_rated:0,streak:0,badge:"",bio:"",followers:0,following:0,isPrivate:false};
-  const isPrivate = p.isPrivate === true;
-  const canSeeContent = isFollowing;
-  const isBlocked = blockedUsers.has(user);
-
-  const handleFollow=()=>{
-    if(isFollowing){
-      // Unfollow — show confirmation dialog
-      confirm({
-        icon:"👤",
-        title:`Unfollow ${user}?`,
-        message:`You'll stop seeing their posts in your Following feed. You can follow again anytime.`,
-        confirmLabel:"Unfollow",
-        onConfirm:()=>{
-          toggleFollowHandle&&toggleFollowHandle(user);
-          setFollowRequested(false);
-        }
-      });
-    } else if(isPrivate&&followRequested){
-      // Cancel request — not rate limited
-      setFollowRequested(false);
-    } else if(isPrivate&&!followRequested){
-      // Private: send request — counts against limit
-      if (rateLimitedFollow) {
-        rateLimitedFollow(()=>setFollowRequested(true));
-      } else {
-        setFollowRequested(true);
-      }
-    } else {
-      // Public: follow immediately — counts against limit
-      if (rateLimitedFollow) {
-        rateLimitedFollow(()=>toggleFollowHandle&&toggleFollowHandle(user));
-      } else {
-        toggleFollowHandle&&toggleFollowHandle(user);
-      }
-    }
-  };
-
-  return (
-    <div style={{height:"100%",overflowY:"auto"}}>
-      <div style={{padding:"10px 22px 6px",display:"flex",alignItems:"center",gap:10}}>
-        <div onClick={onBack} style={{fontSize:11,color:W.dim,fontFamily:"monospace",cursor:"pointer"}}>← Back</div>
-        <div style={{flex:1}}/>
-        <ReportBlockMenu
-          targetType="user" targetId={user} targetLabel={user}
-          targetUser={user}
-          onReport={reportContent} onBlock={blockUser} blockedUsers={blockedUsers}
-          size="md"
-        />
-      </div>
-      {isBlocked&&<div style={{margin:"0 22px 14px",padding:"12px 14px",background:W.accentDim,border:`1px solid ${W.accent}33`,borderRadius:12,textAlign:"center"}}>
-        <div style={{fontSize:11,fontWeight:700,color:W.accent,fontFamily:"monospace",marginBottom:4}}>🚫 You blocked this user</div>
-        <div style={{fontSize:9,color:W.dim,fontFamily:"monospace",lineHeight:1.5}}>Unblock them in Settings → Privacy to see their content.</div>
-      </div>}
-      <div style={{padding:"0 22px 20px",display:"flex",flexDirection:"column",gap:14}}>
-        <div style={{display:"flex",gap:14,alignItems:"center"}}>
-          <div style={{width:58,height:58,borderRadius:"50%",background:W.card,border:`2px solid ${W.accent}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,fontWeight:700,color:W.text,fontFamily:"monospace",flexShrink:0}}>{p.avatar}</div>
-          <div style={{flex:1}}>
-            <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
-              <span style={{fontSize:16,fontWeight:900,color:W.text,fontFamily:"monospace"}}>@{p.username}</span>
-              {p.badge&&<span style={{fontSize:16}}>{p.badge}</span>}
-              {isPrivate&&<Badge color="purple">🔒 Private</Badge>}
-            </div>
-            {p.bio&&<div style={{fontSize:10,color:W.dim,fontFamily:"monospace",marginTop:3}}>{p.bio}</div>}
-            {p.streak>0&&<div style={{display:"flex",gap:4,alignItems:"center",marginTop:4}}><span>🔥</span><span style={{fontSize:10,fontWeight:700,color:W.gold,fontFamily:"monospace"}}>{p.streak}-week streak</span></div>}
-          </div>
-        </div>
-        {/* Stats — hide counts if private and not following */}
-        <div style={{display:"flex",gap:0}}>
-          {[
-            {n:(!isPrivate||canSeeContent)?p.movies_rated:"—",l:"Ranked"},
-            {n:p.followers+(isFollowing?1:0),l:"Followers"},
-            {n:(!isPrivate||canSeeContent)?p.following:"—",l:"Following"},
-          ].map((s,i)=>(
-            <div key={i} style={{flex:1,textAlign:"center",borderRight:i<2?`1px solid ${W.border}`:"none"}}>
-              <div style={{fontSize:18,fontWeight:900,color:i===0?W.accent:W.text,fontFamily:"monospace"}}>{s.n}</div>
-              <div style={{fontSize:9,color:W.dim,fontFamily:"monospace"}}>{s.l}</div>
-            </div>
-          ))}
-        </div>
-        {/* Follow button */}
-        <div onClick={handleFollow} style={{background:isFollowing?W.accentDim:followRequested?W.card:W.accent,border:`1px solid ${isFollowing||followRequested?W.accent:"transparent"}`,color:isFollowing||followRequested?W.accent:"#fff",borderRadius:12,padding:"10px",textAlign:"center",fontSize:12,fontWeight:700,fontFamily:"monospace",cursor:"pointer"}}>
-          {isFollowing?"✓ FOLLOWING":followRequested?"⏳ REQUESTED — tap to cancel":"+ FOLLOW"}
-        </div>
-        {/* Locked content: only show lock wall if private AND not an approved follower */}
-        {isPrivate&&!canSeeContent?(
-          <div style={{textAlign:"center",padding:"28px 16px",background:W.card,border:`1px solid ${W.border}`,borderRadius:14}}>
-            <div style={{fontSize:32,marginBottom:10}}>🔒</div>
-            <div style={{fontSize:13,fontWeight:800,color:W.text,fontFamily:"monospace",marginBottom:6}}>This account is private</div>
-            <div style={{fontSize:10,color:W.dim,fontFamily:"monospace",lineHeight:1.7}}>
-              Follow {`@${p.username}`} to see their rankings, reviews, and activity.
-              {followRequested&&<div style={{marginTop:8,color:W.accent,fontWeight:700}}>Follow request sent — waiting for approval</div>}
-            </div>
-          </div>
-        ):(
-          <>
-            <UserContentTabs user={user} p={p} onSelectMovie={onSelectMovie}/>
-          </>
-        )}
-      </div>
-      <ConfirmDialog/>
-    </div>
-  );
-};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // USER CONTENT TABS — Rankings / Reviews / Activity on another user's profile
 // ─────────────────────────────────────────────────────────────────────────────
 
-const UserContentTabs = ({ user, p, onSelectMovie }) => {
-  const [tab,setTab]=useState("rankings");
-  // Deterministic selection seeded by handle — same user always shows same content
-  const seed = (user||"").split("").reduce((a,c)=>a+c.charCodeAt(0),0);
-  // Rankings: rotate MOVIES starting at a user-specific offset, show up to their movies_rated count
-  const rotateStart = seed % MOVIES.length;
-  const userRankings = [];
-  const count = Math.min(p.movies_rated||0, MOVIES.length);
-  for (let i=0;i<count;i++) userRankings.push(MOVIES[(rotateStart+i)%MOVIES.length]);
-  // Reviews: pick 1-2 deterministic reviews
-  const reviewMovies = userRankings.slice(0, Math.min(2, Math.max(1,(seed%3))));
-  const reviewTexts = [
-    "Absolutely floored. Direction, score, everything clicked.",
-    "Overhyped in my opinion but still a solid watch.",
-    "Couldn't look away. One of the best I've seen this year.",
-    "The third act drags but the payoff makes it worthwhile.",
-    "Not sure what all the fuss is about. Rewatched to be sure.",
-  ];
-  const userRatings = {}; // movie_id -> score
-  userRankings.forEach((m,i)=>{userRatings[m.id] = Math.max(5, 10 - Math.floor(i / Math.max(userRankings.length/6,1)));});
-  // Activity feed: synthesize from rankings and reviews
-  const activity = [];
-  if (userRankings[0]) activity.push({id:`ua-1`,type:"ranking",movie:userRankings[0],time:"2d ago"});
-  if (reviewMovies[0]) activity.push({id:`ua-2`,type:"review",movie:reviewMovies[0],text:reviewTexts[seed%reviewTexts.length],rating:userRatings[reviewMovies[0].id],time:"4d ago"});
-  if (userRankings[1]) activity.push({id:`ua-3`,type:"ranking",movie:userRankings[1],time:"1w ago"});
-  if (userRankings[2]) activity.push({id:`ua-4`,type:"save",movie:userRankings[2],time:"2w ago"});
-
-  return (
-    <>
-      {/* Tab bar */}
-      <div style={{display:"flex",gap:0,borderBottom:`1px solid ${W.border}`,marginBottom:6}}>
-        {[{key:"rankings",label:`Rankings · ${userRankings.length}`},{key:"reviews",label:`Reviews · ${reviewMovies.length}`},{key:"activity",label:"Activity"}].map(t=>(
-          <div key={t.key} onClick={()=>{haptic("light");setTab(t.key);}} style={{flex:1,textAlign:"center",padding:"8px 4px",fontSize:10,fontWeight:700,fontFamily:"monospace",color:tab===t.key?W.accent:W.dim,borderBottom:tab===t.key?`2px solid ${W.accent}`:"2px solid transparent",cursor:"pointer"}}>{t.label}</div>
-        ))}
-      </div>
-
-      {/* Rankings tab */}
-      {tab==="rankings"&&<>
-        {userRankings.length===0&&<div style={{textAlign:"center",padding:"28px 0"}}>
-          <div style={{fontSize:32,marginBottom:8}}>🎬</div>
-          <div style={{fontSize:11,fontWeight:700,color:W.text,fontFamily:"monospace"}}>No rankings yet</div>
-          <div style={{fontSize:10,color:W.dim,fontFamily:"monospace",marginTop:6}}>@{p.username} hasn't ranked any films</div>
-        </div>}
-        {userRankings.map((m,i)=>(
-          <div key={m.id} onClick={()=>{haptic("light");onSelectMovie(m);}} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 10px",background:i===0?W.goldDim:W.card,borderRadius:10,border:`1px solid ${i===0?W.gold+"44":W.border}`,cursor:"pointer"}}>
-            <span style={{fontSize:i<3?13:11,fontWeight:900,color:W.dim,fontFamily:"monospace",width:18,textAlign:"center",flexShrink:0}}>
-              {i<3?["🥇","🥈","🥉"][i]:i+1}
-            </span>
-            <Poster url={m.poster_url} title={m.title} w={28} h={38} radius={4}/>
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{fontSize:11,color:W.text,fontFamily:"monospace",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.title}</div>
-              <div style={{fontSize:9,color:W.dim,fontFamily:"monospace"}}>{m.release_year}</div>
-            </div>
-            <span style={{fontSize:9,color:W.gold,fontFamily:"monospace",fontWeight:700,flexShrink:0}}>{userRatings[m.id]}/10</span>
-          </div>
-        ))}
-      </>}
-
-      {/* Reviews tab */}
-      {tab==="reviews"&&<>
-        {reviewMovies.length===0&&<div style={{textAlign:"center",padding:"28px 0"}}>
-          <div style={{fontSize:32,marginBottom:8}}>✎</div>
-          <div style={{fontSize:11,fontWeight:700,color:W.text,fontFamily:"monospace"}}>No reviews yet</div>
-          <div style={{fontSize:10,color:W.dim,fontFamily:"monospace",marginTop:6}}>@{p.username} hasn't written any reviews</div>
-        </div>}
-        {reviewMovies.map((m,i)=>(
-          <div key={m.id} style={{background:W.card,border:`1px solid ${W.border}`,borderRadius:12,padding:12}}>
-            <div onClick={()=>{haptic("light");onSelectMovie(m);}} style={{display:"flex",gap:10,alignItems:"center",marginBottom:8,cursor:"pointer"}}>
-              <Poster url={m.poster_url} title={m.title} w={32} h={44} radius={6}/>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:11,fontWeight:700,color:W.text,fontFamily:"monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{m.title}</div>
-                <div style={{fontSize:13,fontWeight:900,color:W.gold,fontFamily:"monospace",marginTop:3}}>{userRatings[m.id]}/10</div>
-              </div>
-              <div style={{fontSize:9,color:W.dim,fontFamily:"monospace",flexShrink:0}}>{i===0?"3d ago":"1w ago"}</div>
-            </div>
-            <div style={{fontSize:11,color:W.dim,fontFamily:"monospace",lineHeight:1.6}}>{reviewTexts[(seed+i)%reviewTexts.length]}</div>
-          </div>
-        ))}
-      </>}
-
-      {/* Activity tab */}
-      {tab==="activity"&&<>
-        {activity.length===0&&<div style={{textAlign:"center",padding:"28px 0"}}>
-          <div style={{fontSize:32,marginBottom:8}}>📭</div>
-          <div style={{fontSize:11,fontWeight:700,color:W.text,fontFamily:"monospace"}}>No activity</div>
-        </div>}
-        {activity.map(a=>(
-          <div key={a.id} style={{background:W.card,border:`1px solid ${W.border}`,borderRadius:12,padding:"10px 12px"}}>
-            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-              <div style={{width:24,height:24,borderRadius:"50%",background:W.border,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,color:W.text,fontFamily:"monospace",flexShrink:0}}>{p.avatar}</div>
-              <div style={{flex:1,fontSize:10,color:W.dim,fontFamily:"monospace"}}>
-                <span style={{color:W.accent,fontWeight:700}}>@{p.username}</span>
-                {a.type==="ranking"&&" ranked a new film"}
-                {a.type==="review"&&" posted a review"}
-                {a.type==="save"&&" saved to watchlist"}
-              </div>
-              <div style={{fontSize:8,color:W.dim,fontFamily:"monospace",flexShrink:0}}>{a.time}</div>
-            </div>
-            <div onClick={()=>{haptic("light");onSelectMovie(a.movie);}} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",background:W.bg,borderRadius:8,cursor:"pointer"}}>
-              <Poster url={a.movie.poster_url} title={a.movie.title} w={26} h={36} radius={4}/>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:10,fontWeight:700,color:W.text,fontFamily:"monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{a.movie.title}</div>
-                {a.type==="review"&&<div style={{fontSize:9,color:W.gold,fontFamily:"monospace",marginTop:1}}>★ {a.rating}/10</div>}
-              </div>
-            </div>
-            {a.type==="review"&&a.text&&<div style={{fontSize:10,color:W.dim,fontFamily:"monospace",lineHeight:1.6,marginTop:6,fontStyle:"italic"}}>"{a.text}"</div>}
-          </div>
-        ))}
-      </>}
-    </>
-  );
-};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LEADERBOARD SCREEN
 // ─────────────────────────────────────────────────────────────────────────────
 
-const LeaderboardScreen = ({ onNav, onSelectMovie, onSelectUser, username="", displayName="", blockedUsers=new Set(), myRankedCount=0, myStreak=0 }) => {
-  const [tab,setTab]=useState("global");
-  const youLabel = displayName ? displayName : username ? `@${username}` : "@you";
-  const youHandle = username ? `@${username}` : "@you";
-  const youAvatar = (displayName||username||"Y")[0].toUpperCase();
-
-  // Build leaderboard from USER_PROFILES (single source of truth) + insert current user with real count
-  const otherUsers = Object.entries(USER_PROFILES)
-    .filter(([handle])=>handle!==youHandle)  // Exclude current user's own profile entry
-    .map(([handle,p])=>({user:handle,avatar:p.avatar,movies_rated:p.movies_rated,streak:p.streak,badge:p.badge}));
-
-  // Insert YOU with accurate count from rankedIds
-  const allUsers = [...otherUsers, {user:youHandle,avatar:youAvatar,label:youLabel,movies_rated:myRankedCount,streak:myStreak,badge:myRankedCount>=50?"🔥":"",isYou:true}];
-  // Sort by movies_rated descending and assign rank
-  const GLOBAL = allUsers
-    .sort((a,b)=>b.movies_rated-a.movies_rated)
-    .map((u,i)=>({...u,rank:i+1}));
-
-  const FM=[
-    {rank:1,title:"Interstellar",movie_id:"m-001",avg_rating:9.4,rated_by:["@maya","@josh"],rated_count:3},
-    {rank:2,title:"Parasite",movie_id:"m-002",avg_rating:9.1,rated_by:["@maya","@carlos"],rated_count:2},
-    {rank:3,title:"The Dark Knight",movie_id:"m-003",avg_rating:8.8,rated_by:["@josh","@lina"],rated_count:3},
-    {rank:4,title:"Whiplash",movie_id:"m-004",avg_rating:8.7,rated_by:["@maya"],rated_count:1},
-    {rank:5,title:"RRR",movie_id:"m-005",avg_rating:8.4,rated_by:["@carlos","@lina"],rated_count:2},
-  ];
-  // Top-rated globally — from TMDB. Only loaded when user switches to the tab.
-  const [tmdbTopRatedMovies,setTmdbTopRatedMovies]=useState(null);
-  const [refreshNonce,setRefreshNonce]=useState(0); // bump to re-fetch
-  useEffect(()=>{
-    if (tab!=="toprated") return;
-    let cancelled = false;
-    tmdbTopRated().then(data=>{ if (!cancelled && data) setTmdbTopRatedMovies(data); });
-    return ()=>{ cancelled = true; };
-  },[tab, refreshNonce]);
-  const TOP_RATED = tmdbTopRatedMovies ? tmdbTopRatedMovies.slice(0, 20) : [];
-  // Pull-to-refresh — clears the cached top-rated list so the effect re-fetches.
-  const handleRefresh = async () => {
-    setTmdbTopRatedMovies(null);
-    setRefreshNonce(n=>n+1);
-    await new Promise(r=>setTimeout(r, 700));
-  };
-  const { pullDist, isRefreshing, pullHandlers } = usePullToRefresh(handleRefresh);
-  return (
-    <ScreenWithNav active="leaderboard" onNav={onNav}
-      scrollHandlers={pullHandlers}
-      pullIndicator={<PullIndicator pullDist={pullDist} isRefreshing={isRefreshing}/>}>
-      <div style={{padding:"8px 22px 6px",fontSize:13,fontWeight:800,color:W.text,fontFamily:"monospace"}}>◆ LEADERBOARD</div>
-      <div style={{display:"flex",margin:"0 22px",borderBottom:`1px solid ${W.border}`}}>
-        {[
-          {key:"global",label:"Most Rated"},
-          {key:"friends",label:"Friends' Picks"},
-          ...(TMDB_ENABLED ? [{key:"toprated",label:"Top Rated"}] : [])
-        ].map(t=>(
-          <div key={t.key} onClick={()=>setTab(t.key)} style={{flex:1,textAlign:"center",padding:"8px 0",fontSize:10,fontFamily:"monospace",fontWeight:600,color:tab===t.key?W.accent:W.dim,borderBottom:`2px solid ${tab===t.key?W.accent:"transparent"}`,cursor:"pointer"}}>{t.label}</div>
-        ))}
-      </div>
-      <div style={{padding:"10px 22px 16px",display:"flex",flexDirection:"column",gap:6}}>
-        {tab==="global"&&GLOBAL.filter(u=>u.isYou||!blockedUsers.has(u.user)).map(u=>(
-          <div key={u.rank} onClick={()=>!u.isYou&&onSelectUser&&onSelectUser(u.user)} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",background:u.isYou?W.accentDim:u.rank<=3?`${W.gold}08`:W.card,borderRadius:10,border:`1px solid ${u.isYou?W.accent+"33":u.rank<=3?W.gold+"22":W.border}`,cursor:u.isYou?"default":"pointer"}}>
-            <span style={{width:20,fontSize:u.rank<=3?14:11,fontWeight:900,color:W.dim,fontFamily:"monospace",textAlign:"center"}}>{u.rank<=3?["🥇","🥈","🥉"][u.rank-1]:u.rank}</span>
-            <div style={{width:30,height:30,borderRadius:"50%",background:W.border,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,color:W.text,fontFamily:"monospace"}}>{u.avatar}</div>
-            <div style={{flex:1}}>
-              <div style={{display:"flex",gap:4,alignItems:"center"}}>
-                <span style={{fontSize:11,fontWeight:700,color:u.isYou?W.accent:W.text,fontFamily:"monospace"}}>{u.isYou?(u.label||u.user):u.user}</span>
-                {u.isYou&&<span style={{fontSize:7,color:W.dim,fontFamily:"monospace"}}>(you)</span>}
-                {u.badge&&<span>{u.badge}</span>}
-              </div>
-              <div style={{fontSize:9,color:W.dim,fontFamily:"monospace"}}>{u.streak>0&&`🔥 ${u.streak}w streak`}</div>
-            </div>
-            <div style={{textAlign:"right"}}>
-              <div style={{fontSize:14,fontWeight:900,color:W.gold,fontFamily:"monospace"}}>{u.movies_rated.toLocaleString()}</div>
-              <div style={{fontSize:7,color:W.dim,fontFamily:"monospace"}}>FILMS</div>
-            </div>
-          </div>
-        ))}
-        {tab==="friends"&&FM.map(m=>{
-          const movie=MOVIES.find(c=>c.id===m.movie_id);
-          return (
-            <div key={m.rank} onClick={()=>movie&&onSelectMovie(movie)} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",background:m.rank<=3?`${W.accent}08`:W.card,borderRadius:10,border:`1px solid ${m.rank<=3?W.accent+"22":W.border}`,cursor:"pointer"}}>
-              <span style={{width:20,fontSize:m.rank<=3?14:11,fontWeight:900,color:W.dim,fontFamily:"monospace",textAlign:"center"}}>{m.rank<=3?["🥇","🥈","🥉"][m.rank-1]:m.rank}</span>
-              <Poster url={movie?.poster_url} title={movie?.title} w={32} h={44} radius={6}/>
-              <div style={{flex:1}}><div style={{fontSize:11,fontWeight:700,color:W.text,fontFamily:"monospace"}}>{m.title}</div><div style={{fontSize:9,color:W.dim,fontFamily:"monospace",marginTop:2}}>Rated by {m.rated_by.slice(0,2).join(", ")}{m.rated_count>2&&` +${m.rated_count-2} more`}</div></div>
-              <div style={{textAlign:"right"}}><div style={{fontSize:14,fontWeight:900,color:W.gold,fontFamily:"monospace"}}>★ {m.avg_rating}</div><div style={{fontSize:7,color:W.dim,fontFamily:"monospace"}}>AVG</div></div>
-            </div>
-          );
-        })}
-        {tab==="toprated"&&TOP_RATED.length===0&&<div style={{textAlign:"center",padding:"30px 0",color:W.dim,fontFamily:"monospace",fontSize:11}}>Loading top rated films...</div>}
-        {tab==="toprated"&&TOP_RATED.map((movie,i)=>{
-          const rank = i+1;
-          return (
-            <div key={movie.id} onClick={()=>onSelectMovie(movie)} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",background:rank<=3?`${W.accent}08`:W.card,borderRadius:10,border:`1px solid ${rank<=3?W.accent+"22":W.border}`,cursor:"pointer"}}>
-              <span style={{width:20,fontSize:rank<=3?14:11,fontWeight:900,color:W.dim,fontFamily:"monospace",textAlign:"center"}}>{rank<=3?["🥇","🥈","🥉"][rank-1]:rank}</span>
-              <Poster url={movie.poster_url} title={movie.title} w={32} h={44} radius={6}/>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:11,fontWeight:700,color:W.text,fontFamily:"monospace",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{movie.title}</div>
-                <div style={{fontSize:9,color:W.dim,fontFamily:"monospace",marginTop:2}}>{movie.release_year}{movie.user_rating_count?` · ${movie.user_rating_count.toLocaleString()} votes`:""}</div>
-              </div>
-              <div style={{textAlign:"right"}}><div style={{fontSize:14,fontWeight:900,color:W.gold,fontFamily:"monospace"}}>★ {movie.avg_user_rating}</div><div style={{fontSize:7,color:W.dim,fontFamily:"monospace"}}>TMDB</div></div>
-            </div>
-          );
-        })}
-      </div>
-    </ScreenWithNav>
-  );
-};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SEARCH SCREEN

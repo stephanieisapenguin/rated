@@ -134,6 +134,30 @@ export const MOCK_FRIENDS = [
   {id:"u-carlos",username:"carlos",avatar:"C",is_following:true,follows_me:false},
 ];
 
+// Activity feed in the global discover tab on Home. Real users would replace
+// this once the friends-feed is the primary source.
+export const GLOBAL_FEED = [
+  { id:"g-001", type:"rating",  user:"@cinephile99", avatar:"C", action:"rated",    movie_title:"Parasite",        movie_id:"m-002", rating:10,                                      time:"5m",  likes:34, liked:false },
+  { id:"g-002", type:"ranking", user:"@reeltalks",   avatar:"R", action:"ranked",   movie_title:"Whiplash",        movie_id:"m-004", rating:10, preview:"New #1 · dethroned Interstellar", rank_position:1, time:"22m", likes:18, liked:false },
+  { id:"g-003", type:"rating",  user:"@filmfreak",   avatar:"F", action:"rated",    movie_title:"The Dark Knight", movie_id:"m-003", rating:10,                                      time:"1h",  likes:9,  liked:false },
+  { id:"g-004", type:"review",  user:"@lina",        avatar:"L", action:"reviewed", movie_title:"RRR",             movie_id:"m-005", rating:9,  preview:"S.S. Rajamouli delivers pure spectacle unlike anything Hollywood would greenlight...", time:"2h", likes:27, liked:false },
+  { id:"g-005", type:"streak",  user:"@cinephile99", avatar:"C", action:"hit a 34-week streak 💎",                                                                                  time:"4h",  likes:89, liked:false },
+];
+
+// Mock user-profile records keyed by handle. Used by UserProfileScreen and by
+// MovieDetailScreen's "people you follow" panel. Real implementation replaces
+// this with a backend lookup keyed on follow edges.
+export const USER_PROFILES = {
+  "@cinephile99": { username: "cinephile99", avatar: "C", movies_rated: 847, streak: 34, badge: "💎", bio: "Seen everything twice.",            followers: 1204, following: 88,  isPrivate: false },
+  "@filmfreak":   { username: "filmfreak",   avatar: "F", movies_rated: 612, streak: 21, badge: "🏆", bio: "35mm or nothing.",                   followers: 892,  following: 120, isPrivate: false },
+  "@maya":        { username: "maya",        avatar: "M", movies_rated: 489, streak: 12, badge: "🏆", bio: "Horror nerd. World cinema devotee.", followers: 567,  following: 203, isPrivate: false },
+  "@reeltalks":   { username: "reeltalks",   avatar: "R", movies_rated: 356, streak: 8,  badge: "🔥", bio: "Film criticism is my cardio.",       followers: 341,  following: 77,  isPrivate: false },
+  "@jasonk":      { username: "jasonk",      avatar: "J", movies_rated: 89,  streak: 7,  badge: "🔥", bio: "Just getting started.",              followers: 12,   following: 34,  isPrivate: false },
+  "@josh":        { username: "josh",        avatar: "J", movies_rated: 76,  streak: 4,  badge: "",   bio: "Drama and thrillers mainly.",        followers: 45,   following: 60,  isPrivate: false },
+  "@lina":        { username: "lina",        avatar: "L", movies_rated: 63,  streak: 3,  badge: "",   bio: "International cinema fanatic.",      followers: 88,   following: 91,  isPrivate: true },
+  "@carlos":      { username: "carlos",      avatar: "C", movies_rated: 41,  streak: 1,  badge: "",   bio: "New here, loving it.",               followers: 9,    following: 22,  isPrivate: false },
+};
+
 export const MOCK_NOTIFICATIONS = [
   {id:"n-001",type:"follow",     read:false,time:"2m ago",  user:"@cinephile99",avatar:"C", text:"started following you"},
   {id:"n-002",type:"follow_req", read:false,time:"14m ago", user:"@filmfreak",  avatar:"F", text:"requested to follow you"},

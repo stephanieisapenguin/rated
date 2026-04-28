@@ -1,0 +1,13 @@
+import { W } from "../theme";
+
+// Square-with-up-arrow share affordance (iOS-style). Single source of truth so
+// the visual identity stays consistent across feed cards, movie detail,
+// profile, share-sheet header, and share-sheet menu items.
+export const ShareIcon = ({ size = 14, color = W.dim, strokeWidth = 2 }) => (
+  <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none"
+    stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7"/>
+    <polyline points="16 6 12 2 8 6"/>
+    <line x1="12" y1="2" x2="12" y2="15"/>
+  </svg>
+);
