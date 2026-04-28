@@ -87,6 +87,17 @@ def _login_full(client, sub="alice", name="Alice", email="alice@test.com"):
     return body
 
 
+def _authed(token: str) -> dict:
+    """Auth-header dict: pass via headers=... on mutating requests."""
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _authed_login(client, **kwargs):
+    """Login + return (user_id, headers) so tests can write to that user."""
+    body = _login_full(client, **kwargs)
+    return body["user_id"], _authed(body["session_token"])
+
+
 def test_login_creates_user_and_persists(client):
     user_id = _login(client)
     r = client.get(f"/users/{user_id}")
@@ -108,7 +119,14 @@ def test_username_claim_requires_session(client):
     # No token → 401
     r = client.post("/auth/username", json={"username": "alice"})
     assert r.status_code == 401
-    # Garbage token → 401
+    # Garbage token (header) → 401
+    r = client.post(
+        "/auth/username",
+        headers=_authed("not-a-real-token"),
+        json={"username": "alice"},
+    )
+    assert r.status_code == 401
+    # Garbage token (legacy query param) → 401
     r = client.post(
         "/auth/username",
         params={"session_token": "not-a-real-token"},
@@ -122,10 +140,10 @@ def test_username_claim_flow(client):
     # Available?
     r = client.get("/auth/username/check/alice")
     assert r.status_code == 200 and r.json()["available"] is True
-    # Claim with real session token
+    # Claim with real session token (header path — preferred)
     r = client.post(
         "/auth/username",
-        params={"session_token": token},
+        headers=_authed(token),
         json={"username": "alice"},
     )
     assert r.status_code == 200 and r.json()["ok"] is True
@@ -137,24 +155,30 @@ def test_username_claim_flow(client):
     assert r.json()["available"] is False
 
 
-def test_logout_revokes_session(client):
+def test_username_claim_legacy_query_param_still_accepted(client):
+    """Backwards compatibility: ?session_token=... still works alongside
+    Authorization header. Lets older frontends and curl one-liners keep going
+    while we migrate."""
     token = _login_full(client)["session_token"]
-    # Token works initially
     r = client.post(
         "/auth/username",
         params={"session_token": token},
-        json={"username": "alice"},
+        json={"username": "legacy"},
     )
+    assert r.status_code == 200
+
+
+def test_logout_revokes_session(client):
+    token = _login_full(client)["session_token"]
+    hdrs = _authed(token)
+    # Token works initially
+    r = client.post("/auth/username", headers=hdrs, json={"username": "alice"})
     assert r.status_code == 200
     # Log out
     r = client.post("/auth/logout", params={"session_token": token})
     assert r.status_code == 200 and r.json() == {"ok": True, "revoked": True}
     # Same token now rejected
-    r = client.post(
-        "/auth/username",
-        params={"session_token": token},
-        json={"username": "alicia"},
-    )
+    r = client.post("/auth/username", headers=hdrs, json={"username": "alicia"})
     assert r.status_code == 401
 
 
@@ -172,8 +196,8 @@ def test_username_validation_rejects_bad_input(client):
 
 
 def test_ranking_round_trip(client):
-    user_id = _login(client)
-    r = client.post(f"/users/{user_id}/rankings", json={"movie_id": "m-001", "score": 9})
+    user_id, hdrs = _authed_login(client)
+    r = client.post(f"/users/{user_id}/rankings", json={"movie_id": "m-001", "score": 9}, headers=hdrs)
     assert r.status_code == 200
     rankings = client.get(f"/users/{user_id}/rankings").json()
     assert len(rankings) == 1
@@ -182,57 +206,57 @@ def test_ranking_round_trip(client):
 
 
 def test_ranking_replaces_existing(client):
-    user_id = _login(client)
-    client.post(f"/users/{user_id}/rankings", json={"movie_id": "m-001", "score": 5})
-    client.post(f"/users/{user_id}/rankings", json={"movie_id": "m-001", "score": 10})
+    user_id, hdrs = _authed_login(client)
+    client.post(f"/users/{user_id}/rankings", json={"movie_id": "m-001", "score": 5}, headers=hdrs)
+    client.post(f"/users/{user_id}/rankings", json={"movie_id": "m-001", "score": 10}, headers=hdrs)
     rankings = client.get(f"/users/{user_id}/rankings").json()
     assert len(rankings) == 1
     assert rankings[0]["score"] == 10
 
 
 def test_ranking_score_bounds(client):
-    user_id = _login(client)
+    user_id, hdrs = _authed_login(client)
     for bad in (0, 11, -1, 100):
-        r = client.post(f"/users/{user_id}/rankings", json={"movie_id": "m-001", "score": bad})
+        r = client.post(f"/users/{user_id}/rankings", json={"movie_id": "m-001", "score": bad}, headers=hdrs)
         assert r.status_code == 400, f"score={bad} should be rejected"
 
 
 def test_follow_and_feed(client):
-    me = _login(client, sub="me", name="Me", email="me@x.com")
+    me, hdrs = _authed_login(client, sub="me", name="Me", email="me@x.com")
     cine = client.get("/users/by-username/cinephile99").json()
-    r = client.post(f"/users/{me}/follow", json={"followee_id": cine["user_id"]})
+    r = client.post(f"/users/{me}/follow", json={"followee_id": cine["user_id"]}, headers=hdrs)
     assert r.status_code == 200
 
     feed = client.get(f"/users/{me}/feed").json()
     assert len(feed) > 0
     assert all(item["user"]["username"] == "cinephile99" for item in feed)
 
-    # Unfollow drops the feed back to empty.
-    client.delete(f"/users/{me}/follow/{cine['user_id']}")
+    client.delete(f"/users/{me}/follow/{cine['user_id']}", headers=hdrs)
     assert client.get(f"/users/{me}/feed").json() == []
 
 
 def test_no_self_follow(client):
-    me = _login(client)
-    r = client.post(f"/users/{me}/follow", json={"followee_id": me})
+    me, hdrs = _authed_login(client)
+    r = client.post(f"/users/{me}/follow", json={"followee_id": me}, headers=hdrs)
     assert r.status_code == 400
 
 
 def test_saved_round_trip(client):
-    user_id = _login(client)
-    client.post(f"/users/{user_id}/saved", json={"movie_id": "m-002"})
-    client.post(f"/users/{user_id}/saved", json={"movie_id": "m-003"})
+    user_id, hdrs = _authed_login(client)
+    client.post(f"/users/{user_id}/saved", json={"movie_id": "m-002"}, headers=hdrs)
+    client.post(f"/users/{user_id}/saved", json={"movie_id": "m-003"}, headers=hdrs)
     saved = client.get(f"/users/{user_id}/saved").json()
     assert set(saved) == {"m-002", "m-003"}
-    client.delete(f"/users/{user_id}/saved/m-002")
+    client.delete(f"/users/{user_id}/saved/m-002", headers=hdrs)
     assert client.get(f"/users/{user_id}/saved").json() == ["m-003"]
 
 
 def test_review_upsert_stamps_edited_at(client):
-    user_id = _login(client)
+    user_id, hdrs = _authed_login(client)
     r = client.post(
         f"/users/{user_id}/reviews",
         json={"movie_id": "m-001", "rating": 8, "text": "Great"},
+        headers=hdrs,
     )
     first = r.json()
     assert first["edited"] is False
@@ -240,6 +264,7 @@ def test_review_upsert_stamps_edited_at(client):
     r = client.post(
         f"/users/{user_id}/reviews",
         json={"movie_id": "m-001", "rating": 10, "text": "Even better on rewatch"},
+        headers=hdrs,
     )
     second = r.json()
     assert second["edited"] is True
@@ -248,7 +273,7 @@ def test_review_upsert_stamps_edited_at(client):
 
 
 def test_review_validation(client):
-    user_id = _login(client)
+    user_id, hdrs = _authed_login(client)
     too_long = "x" * 501
     bad_inputs = [
         {"movie_id": "m-001", "rating": 0,  "text": "ok"},
@@ -258,7 +283,7 @@ def test_review_validation(client):
         {"movie_id": "m-XXX", "rating": 5,  "text": "ok"},
     ]
     for body in bad_inputs:
-        r = client.post(f"/users/{user_id}/reviews", json=body)
+        r = client.post(f"/users/{user_id}/reviews", json=body, headers=hdrs)
         assert r.status_code == 400, f"{body!r} should fail validation"
 
 
@@ -323,9 +348,9 @@ def test_movie_rankings_listing(client):
 
 
 def test_followers_and_following_lists(client):
-    me = _login(client, sub="me", name="Me", email="me@x.com")
+    me, hdrs = _authed_login(client, sub="me", name="Me", email="me@x.com")
     cine = client.get("/users/by-username/cinephile99").json()
-    client.post(f"/users/{me}/follow", json={"followee_id": cine["user_id"]})
+    client.post(f"/users/{me}/follow", json={"followee_id": cine["user_id"]}, headers=hdrs)
 
     following = client.get(f"/users/{me}/following").json()
     assert len(following) == 1
@@ -493,7 +518,7 @@ def test_follow_emits_notification_on_followee(client):
     n0 = client.get(f"/users/{cine_id}/notifications").json()
     assert n0["unread_count"] == 0 and n0["items"] == []
 
-    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id}, headers=_authed(me["session_token"]))
 
     n1 = client.get(f"/users/{cine_id}/notifications").json()
     assert n1["unread_count"] == 1
@@ -515,7 +540,7 @@ def test_notification_actor_reflects_current_username(client):
 
     client.post("/auth/username", params={"session_token": me["session_token"]},
                 json={"username": "before"})
-    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id}, headers=_authed(me["session_token"]))
 
     note = client.get(f"/users/{cine_id}/notifications").json()["items"][0]
     assert note["actor"]["username"] == "before"
@@ -531,20 +556,20 @@ def test_notification_actor_reflects_current_username(client):
 
 def test_repeat_follow_does_not_double_notify(client):
     """Following the same person twice creates one notification, not two."""
-    me_id = _login(client, sub="dup", name="Dup", email="d@x.com")
+    me_id, hdrs = _authed_login(client, sub="dup", name="Dup", email="d@x.com")
     cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
 
-    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
-    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})  # idempotent
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id}, headers=hdrs)
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id}, headers=hdrs)  # idempotent
 
     items = client.get(f"/users/{cine_id}/notifications").json()["items"]
     assert len(items) == 1
 
 
 def test_mark_one_notification_read(client):
-    me_id = _login(client, sub="m1", name="M", email="m1@x.com")
+    me_id, hdrs = _authed_login(client, sub="m1", name="M", email="m1@x.com")
     cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
-    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id}, headers=hdrs)
 
     note_id = client.get(f"/users/{cine_id}/notifications").json()["items"][0]["id"]
     r = client.post(f"/users/{cine_id}/notifications/{note_id}/read")
@@ -559,8 +584,8 @@ def test_mark_all_notifications_read(client):
     cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
     # Three different users follow cine → three notifications
     for sub in ("a1", "a2", "a3"):
-        uid = _login(client, sub=sub, name=sub, email=f"{sub}@x.com")
-        client.post(f"/users/{uid}/follow", json={"followee_id": cine_id})
+        uid, hdrs = _authed_login(client, sub=sub, name=sub, email=f"{sub}@x.com")
+        client.post(f"/users/{uid}/follow", json={"followee_id": cine_id}, headers=hdrs)
 
     assert client.get(f"/users/{cine_id}/notifications").json()["unread_count"] == 3
 
@@ -570,9 +595,9 @@ def test_mark_all_notifications_read(client):
 
 
 def test_unread_only_filter(client):
-    me_id = _login(client, sub="uo", name="UO", email="uo@x.com")
+    me_id, hdrs = _authed_login(client, sub="uo", name="UO", email="uo@x.com")
     cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
-    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id}, headers=hdrs)
 
     # mark it read
     note_id = client.get(f"/users/{cine_id}/notifications").json()["items"][0]["id"]
@@ -592,8 +617,8 @@ def test_notifications_404_for_unknown_user(client):
 def test_notification_type_filter(client):
     """?type=follow returns only follow notifications. ?type=bogus → 400."""
     cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
-    me_id = _login(client, sub="tf", name="TF", email="tf@x.com")
-    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+    me_id, hdrs = _authed_login(client, sub="tf", name="TF", email="tf@x.com")
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id}, headers=hdrs)
 
     follows = client.get(f"/users/{cine_id}/notifications", params={"type": "follow"}).json()
     assert len(follows["items"]) == 1
@@ -611,8 +636,8 @@ def test_notification_type_filter(client):
 
 def test_notification_delete(client):
     cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
-    me_id = _login(client, sub="del", name="Del", email="del@x.com")
-    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+    me_id, hdrs = _authed_login(client, sub="del", name="Del", email="del@x.com")
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id}, headers=hdrs)
 
     note_id = client.get(f"/users/{cine_id}/notifications").json()["items"][0]["id"]
     r = client.delete(f"/users/{cine_id}/notifications/{note_id}")
@@ -630,8 +655,8 @@ def test_notification_delete(client):
 def test_notification_delete_only_owner(client):
     """User A can't delete user B's notifications even if they guess the id."""
     cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
-    me_id = _login(client, sub="atk", name="A", email="a@x.com")
-    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+    me_id, hdrs = _authed_login(client, sub="atk", name="A", email="a@x.com")
+    client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id}, headers=hdrs)
     note_id = client.get(f"/users/{cine_id}/notifications").json()["items"][0]["id"]
 
     other_id = _login(client, sub="atk2", name="B", email="b@x.com")
@@ -676,9 +701,9 @@ def test_set_privacy_requires_own_session(client):
 
 
 def test_follow_a_public_user_is_immediate(client):
-    me_id = _login(client, sub="pubf", name="P", email="pf@x.com")
+    me_id, hdrs = _authed_login(client, sub="pubf", name="P", email="pf@x.com")
     cine_id = client.get("/users/by-username/cinephile99").json()["user_id"]
-    r = client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id})
+    r = client.post(f"/users/{me_id}/follow", json={"followee_id": cine_id}, headers=hdrs)
     assert r.status_code == 200
     assert r.json() == {"ok": True, "state": "approved"}
     assert client.get(f"/users/{cine_id}").json()["follower_count"] == 1
@@ -694,7 +719,7 @@ def test_follow_a_private_user_is_pending(client):
                 params={"session_token": target["session_token"]},
                 json={"is_private": True})
 
-    r = client.post(f"/users/{me_id}/follow", json={"followee_id": target_id})
+    r = client.post(f"/users/{me_id}/follow", json={"followee_id": target_id}, headers=_authed(me["session_token"]))
     assert r.json()["state"] == "pending"
 
     # Counts unchanged: follower_count counts approved-only
@@ -725,14 +750,14 @@ def test_follow_a_private_user_is_pending(client):
 
 
 def test_reject_follow_request(client):
-    me_id = _login(client, sub="rej1", name="R1", email="r1@x.com")
+    me_id, me_hdrs = _authed_login(client, sub="rej1", name="R1", email="r1@x.com")
     target = _login_full(client, sub="rej2", name="R2", email="r2@x.com")
     target_id = target["user_id"]
 
     client.post(f"/users/{target_id}/privacy",
                 params={"session_token": target["session_token"]},
                 json={"is_private": True})
-    client.post(f"/users/{me_id}/follow", json={"followee_id": target_id})
+    client.post(f"/users/{me_id}/follow", json={"followee_id": target_id}, headers=me_hdrs)
 
     r = client.delete(
         f"/users/{target_id}/follow-requests/{me_id}",
@@ -745,7 +770,7 @@ def test_reject_follow_request(client):
         f"/users/{target_id}/follow-requests",
         params={"session_token": target["session_token"]},
     ).json() == []
-    r = client.post(f"/users/{me_id}/follow", json={"followee_id": target_id})
+    r = client.post(f"/users/{me_id}/follow", json={"followee_id": target_id}, headers=me_hdrs)
     assert r.json()["state"] == "pending"
 
 
@@ -763,16 +788,65 @@ def test_follow_requests_self_only(client):
 
 def test_existing_followers_unaffected_by_going_private(client):
     """Flipping is_private doesn't retroactively reset approved follows."""
-    me_id = _login(client, sub="kept", name="K", email="k@x.com")
+    me_id, me_hdrs = _authed_login(client, sub="kept", name="K", email="k@x.com")
     target = _login_full(client, sub="keep", name="K2", email="k2@x.com")
     target_id = target["user_id"]
-    client.post(f"/users/{me_id}/follow", json={"followee_id": target_id})
+    client.post(f"/users/{me_id}/follow", json={"followee_id": target_id}, headers=me_hdrs)
     assert client.get(f"/users/{target_id}").json()["follower_count"] == 1
     client.post(f"/users/{target_id}/privacy",
                 params={"session_token": target["session_token"]},
                 json={"is_private": True})
     assert client.get(f"/users/{target_id}").json()["follower_count"] == 1
 
+
+# ─── Auth on writes ──────────────────────────────────────────────────────────
+# Every mutation endpoint must require a session token AND verify that
+# the path's user_id matches the authenticated user. Reads stay public.
+
+
+_ALL_WRITE_PATHS = [
+    ("POST",   "/users/{uid}/rankings",                {"movie_id": "m-001", "score": 8}),
+    ("POST",   "/users/{uid}/pairwise",                {"winner_movie_id": "m-001", "loser_movie_id": "m-002"}),
+    ("POST",   "/users/{uid}/follow",                  {"followee_id": "irrelevant"}),
+    ("DELETE", "/users/{uid}/follow/some-followee",    None),
+    ("POST",   "/users/{uid}/watchlist",               {"movie_id": "m-001"}),
+    ("DELETE", "/users/{uid}/watchlist/m-001",         None),
+    ("POST",   "/users/{uid}/saved",                   {"movie_id": "m-001"}),
+    ("DELETE", "/users/{uid}/saved/m-001",             None),
+    ("POST",   "/users/{uid}/reviews",                 {"movie_id": "m-001", "rating": 8, "text": "ok"}),
+    ("DELETE", "/users/{uid}/reviews/m-001",           None),
+]
+
+
+def test_writes_require_session(client):
+    """No token → 401 on every mutation route, regardless of body validity."""
+    user_id = _login(client)
+    for method, path, body in _ALL_WRITE_PATHS:
+        url = path.format(uid=user_id)
+        r = client.request(method, url, json=body)
+        assert r.status_code == 401, f"{method} {url} should 401 without token, got {r.status_code}"
+
+
+def test_writes_reject_other_users_token(client):
+    """Token from user A trying to write to user B's data → 403."""
+    a_id, a_hdrs = _authed_login(client, sub="auth_a", name="A", email="a@x.com")
+    b_id        = _login(client,         sub="auth_b", name="B", email="b@x.com")
+    for method, path, body in _ALL_WRITE_PATHS:
+        url = path.format(uid=b_id)
+        r = client.request(method, url, json=body, headers=a_hdrs)
+        assert r.status_code == 403, f"{method} {url} should 403 (cross-user), got {r.status_code}"
+
+
+def test_writes_accept_legacy_query_param_token(client):
+    """Backwards-compat path: ?session_token= still works on writes too."""
+    user_id, hdrs = _authed_login(client)
+    token = hdrs["Authorization"].split(" ", 1)[1]
+    r = client.post(
+        f"/users/{user_id}/rankings",
+        params={"session_token": token},
+        json={"movie_id": "m-001", "score": 7},
+    )
+    assert r.status_code == 200
 
 # ─── Pagination ──────────────────────────────────────────────────────────────
 
@@ -851,7 +925,8 @@ def test_persistence_across_restart(tmp_path, monkeypatch):
             json={"id_token": "sub_persist|Persisted|p@x.com"},
         ).json()
         user_id = login["user_id"]
-        c1.post(f"/users/{user_id}/rankings", json={"movie_id": "m-005", "score": 7})
+        hdrs = {"Authorization": f"Bearer {login['session_token']}"}
+        c1.post(f"/users/{user_id}/rankings", json={"movie_id": "m-005", "score": 7}, headers=hdrs)
 
     # Second "boot": brand new TestClient against the same DB file.
     for mod in ("db", "models", "rated_backend", "api"):
