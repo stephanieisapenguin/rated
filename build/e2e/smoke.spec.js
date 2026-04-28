@@ -60,20 +60,37 @@ test("API: login + rate + read-back persists", async ({ request }) => {
   expect(loginRes.ok()).toBeTruthy();
   const login = await loginRes.json();
   const userId = login.user_id;
+  // Mutation routes require a bearer token (added in feature-auth-on-writes).
+  const auth = { Authorization: `Bearer ${login.session_token}` };
 
   // Rate Interstellar a 9.
   const rankRes = await request.post(`${API_BASE}/users/${userId}/rankings`, {
     data: { movie_id: "m-001", score: 9 },
+    headers: auth,
   });
   expect(rankRes.ok()).toBeTruthy();
 
-  // Read-back returns the same row.
+  // Read-back returns the same row. (GET stays public — no auth needed.)
   const listRes = await request.get(`${API_BASE}/users/${userId}/rankings`);
   expect(listRes.ok()).toBeTruthy();
   const rankings = await listRes.json();
   expect(rankings).toHaveLength(1);
   expect(rankings[0].movie.movie_id).toBe("m-001");
   expect(rankings[0].score).toBe(9);
+});
+
+
+test("API: write without auth header is rejected", async ({ request }) => {
+  // Regression guard: auth-on-writes must keep blocking unauthenticated
+  // mutations even though the rest of the suite works.
+  const sub = `sub_e2e_noauth_${Date.now()}`;
+  const login = await (await request.post(`${API_BASE}/auth/login`, {
+    data: { id_token: `${sub}|NoAuth|na@x.com` },
+  })).json();
+  const r = await request.post(`${API_BASE}/users/${login.user_id}/rankings`, {
+    data: { movie_id: "m-001", score: 5 },
+  });
+  expect(r.status()).toBe(401);
 });
 
 test("CORS allows the frontend's localhost origin", async ({ request }) => {
