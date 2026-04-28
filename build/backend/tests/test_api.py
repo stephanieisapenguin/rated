@@ -98,6 +98,13 @@ def _authed_login(client, **kwargs):
     return body["user_id"], _authed(body["session_token"])
 
 
+def _authed_login_full(client, **kwargs):
+    """Login + return (full_body, headers). Use when the test needs the
+    session_token directly (e.g. mixing header + query-param auth in one test)."""
+    body = _login_full(client, **kwargs)
+    return body, _authed(body["session_token"])
+
+
 def test_login_creates_user_and_persists(client):
     user_id = _login(client)
     r = client.get(f"/users/{user_id}")
@@ -747,6 +754,64 @@ def test_follow_a_private_user_is_pending(client):
     # Now counts include the edge
     assert client.get(f"/users/{target_id}").json()["follower_count"] == 1
     assert client.get(f"/users/{me_id}").json()["following_count"] == 1
+
+
+def test_pending_follow_emits_follow_request_notification(client):
+    """Private follow → followee gets a FOLLOW_REQUEST notification, not a
+    plain FOLLOW. Frontend can render approve/reject controls based on type."""
+    me, me_hdrs = _authed_login_full(client, sub="prn", name="P", email="prn@x.com")
+    me_id = me["user_id"]
+    target = _login_full(client, sub="prn_t", name="T", email="prn_t@x.com")
+    target_id = target["user_id"]
+    target_hdrs = _authed(target["session_token"])
+
+    client.post(f"/users/{target_id}/privacy", headers=target_hdrs, json={"is_private": True})
+    client.post(f"/users/{me_id}/follow", json={"followee_id": target_id}, headers=me_hdrs)
+
+    notes = client.get(f"/users/{target_id}/notifications").json()["items"]
+    assert len(notes) == 1
+    assert notes[0]["type"] == "follow_request"
+    assert notes[0]["actor_id"] == me_id
+
+
+def test_approving_request_swaps_request_for_follow_notification(client):
+    """Once approved, the FOLLOW_REQUEST notification is gone and a FOLLOW
+    one takes its place — followee's inbox stays uncluttered."""
+    me, me_hdrs = _authed_login_full(client, sub="apn", name="A", email="apn@x.com")
+    me_id = me["user_id"]
+    target = _login_full(client, sub="apn_t", name="T", email="apn_t@x.com")
+    target_id = target["user_id"]
+    target_hdrs = _authed(target["session_token"])
+
+    client.post(f"/users/{target_id}/privacy", headers=target_hdrs, json={"is_private": True})
+    client.post(f"/users/{me_id}/follow", json={"followee_id": target_id}, headers=me_hdrs)
+
+    # Pre-approval: one FOLLOW_REQUEST
+    pre = client.get(f"/users/{target_id}/notifications").json()["items"]
+    assert [n["type"] for n in pre] == ["follow_request"]
+
+    # Approve
+    client.post(f"/users/{target_id}/follow-requests/{me_id}/approve", headers=target_hdrs)
+
+    # Post-approval: one FOLLOW (request notification gone)
+    post = client.get(f"/users/{target_id}/notifications").json()["items"]
+    assert [n["type"] for n in post] == ["follow"]
+
+
+def test_rejecting_request_removes_the_request_notification(client):
+    """Rejecting cleans up the request notification too — no orphan rows."""
+    me, me_hdrs = _authed_login_full(client, sub="rjn", name="R", email="rjn@x.com")
+    me_id = me["user_id"]
+    target = _login_full(client, sub="rjn_t", name="T", email="rjn_t@x.com")
+    target_id = target["user_id"]
+    target_hdrs = _authed(target["session_token"])
+
+    client.post(f"/users/{target_id}/privacy", headers=target_hdrs, json={"is_private": True})
+    client.post(f"/users/{me_id}/follow", json={"followee_id": target_id}, headers=me_hdrs)
+    assert client.get(f"/users/{target_id}/notifications").json()["unread_count"] == 1
+
+    client.delete(f"/users/{target_id}/follow-requests/{me_id}", headers=target_hdrs)
+    assert client.get(f"/users/{target_id}/notifications").json()["items"] == []
 
 
 def test_reject_follow_request(client):

@@ -45,9 +45,10 @@ class NotificationType(str, enum.Enum):
     """Closed set of notification kinds. Stored as a string in the DB so
     SQLite/Postgres are both happy without a real ENUM type. Validated in the
     service layer instead. Add new variants here when emitting new kinds."""
-    FOLLOW = "follow"
-    REVIEW = "review"   # reserved — not auto-emitted yet
-    RANK   = "rank"     # reserved — not auto-emitted yet
+    FOLLOW         = "follow"
+    FOLLOW_REQUEST = "follow_request"   # private account got asked to be followed
+    REVIEW         = "review"           # reserved — not auto-emitted yet
+    RANK           = "rank"             # reserved — not auto-emitted yet
 
 
 # ─── Convenience factories ────────────────────────────────────────────────────
@@ -283,15 +284,20 @@ class FeedService:
             return {"state": existing.state}
         state = "pending" if followee.is_private else "approved"
         db.add(FollowRow(follower_id=follower_id, followee_id=followee_id, state=state))
-        # Notify the followee — but only for approved follows. Pending requests
-        # are surfaced via /follow-requests; a separate FOLLOW_REQUEST
-        # notification type is a planned follow-up.
-        if state == "approved":
-            db.add(NotificationRow(
-                user_id=followee_id,
-                type=NotificationType.FOLLOW.value,
-                actor_id=follower_id,
-            ))
+        # Notify the followee. Approved follows get a FOLLOW notification;
+        # pending requests on private accounts get FOLLOW_REQUEST so the
+        # frontend can render approve/reject controls. Either way the actor
+        # info is JOINed in at read time, no stale text.
+        notif_type = (
+            NotificationType.FOLLOW.value
+            if state == "approved"
+            else NotificationType.FOLLOW_REQUEST.value
+        )
+        db.add(NotificationRow(
+            user_id=followee_id,
+            type=notif_type,
+            actor_id=follower_id,
+        ))
         db.commit()
         return {"state": state}
 
@@ -334,7 +340,12 @@ class FeedService:
         return list(rows)
 
     def approve_request(self, db: Session, followee_id: str, follower_id: str) -> bool:
-        """Flip a pending edge to approved. Returns False if no pending edge exists."""
+        """Flip a pending edge to approved. Returns False if no pending edge exists.
+
+        On approval we also delete the existing FOLLOW_REQUEST notification on
+        the followee (it's resolved — no point cluttering the inbox) and emit
+        a fresh FOLLOW notification so the followee sees "X followed you" the
+        same way they would for a public follow."""
         row = db.execute(
             select(FollowRow).where(
                 FollowRow.follower_id == follower_id,
@@ -345,11 +356,36 @@ class FeedService:
         if not row:
             return False
         row.state = "approved"
+        # Clear the resolved request notification.
+        db.execute(
+            delete(NotificationRow).where(
+                NotificationRow.user_id == followee_id,
+                NotificationRow.actor_id == follower_id,
+                NotificationRow.type == NotificationType.FOLLOW_REQUEST.value,
+            )
+        )
+        # Emit the regular FOLLOW notification — feed-style entry, distinct
+        # from the dismissed request.
+        db.add(NotificationRow(
+            user_id=followee_id,
+            type=NotificationType.FOLLOW.value,
+            actor_id=follower_id,
+        ))
         db.commit()
         return True
 
     def reject_request(self, db: Session, followee_id: str, follower_id: str) -> bool:
-        """Delete a pending edge. Returns False if no pending edge exists."""
+        """Delete a pending edge AND the FOLLOW_REQUEST notification it spawned.
+        Returns False if no pending edge exists."""
+        # Clear the resolved request notification regardless of whether the
+        # edge delete succeeds — same target, same action.
+        db.execute(
+            delete(NotificationRow).where(
+                NotificationRow.user_id == followee_id,
+                NotificationRow.actor_id == follower_id,
+                NotificationRow.type == NotificationType.FOLLOW_REQUEST.value,
+            )
+        )
         result = db.execute(
             delete(FollowRow).where(
                 FollowRow.follower_id == follower_id,
