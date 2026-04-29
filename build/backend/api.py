@@ -69,14 +69,17 @@ TAGS = [
 
 app = FastAPI(title="Rated API", version="0.1.0", openapi_tags=TAGS)
 
-# CORS — read allowlist from env. Default covers local dev (Vite at :5173).
-# For production set ALLOWED_ORIGINS to a comma-separated list of frontend URLs,
-# e.g. "https://silver-salamander-08daf4.netlify.app,https://rated.com".
+# CORS — read allowlist from env. ALLOWED_ORIGINS in prod is a comma-separated
+# list of frontend URLs (e.g. "https://silver-salamander-08daf4.netlify.app").
+# Local dev origins are always appended so a production deploy can be tested
+# against from a developer's machine without touching env vars.
+_DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 _origins_env = os.environ.get("ALLOWED_ORIGINS", "").strip()
 if _origins_env:
-    ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",") if o.strip()]
+    _explicit = [o.strip() for o in _origins_env.split(",") if o.strip()]
+    ALLOWED_ORIGINS = _explicit + [o for o in _DEV_ORIGINS if o not in _explicit]
 else:
-    ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    ALLOWED_ORIGINS = list(_DEV_ORIGINS)
 
 app.add_middleware(
     CORSMiddleware,
