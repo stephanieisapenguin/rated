@@ -36,7 +36,7 @@ export const UpcomingScreen = ({ onNav, onSelectUpcoming, watchlist, onToggleWat
       scrollHandlers={pullHandlers}
       pullIndicator={<PullIndicator pullDist={pullDist} isRefreshing={isRefreshing}/>}>
       <div style={{ padding: "8px 22px 6px", fontSize: 13, fontWeight: 800, color: W.text, fontFamily: "monospace" }}>◈ UPCOMING · MUST SEE</div>
-      <div style={{ display: "flex", gap: 6, padding: "0 22px 10px", overflowX: "auto" }}>
+      <div className="no-scrollbar" style={{ display: "flex", gap: 6, padding: "0 22px 10px", overflowX: "auto" }}>
         {ALL_GENRES.map((g) => (
           <span key={g} onClick={() => setGenre(g)} style={{
             flexShrink: 0, padding: "4px 12px", borderRadius: 16,

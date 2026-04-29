@@ -5,7 +5,7 @@ import { Poster } from "../components/Poster";
 import { TapTarget } from "../components/TapTarget";
 import { API } from "../lib/api";
 import { calcElo } from "../lib/elo";
-import { MOVIES } from "../lib/mockData";
+import { findMovieSync } from "../lib/tmdb";
 import { W } from "../theme";
 
 // Pairwise binary-search ranker. Bisects the existing ranked list with O(log n)
@@ -25,7 +25,7 @@ export const RankScreen = ({ newMovie, rankedIds, eloScores, onComplete, onCance
 
   const midIdx = Math.floor((lo + hi) / 2);
   const opponentId = rankedIds[midIdx];
-  const opponent = MOVIES.find((m) => m.id === opponentId);
+  const opponent = findMovieSync(opponentId);
 
   const pick = async (winnerId) => {
     const loserId = winnerId === newMovie.id ? opponentId : newMovie.id;
@@ -48,7 +48,15 @@ export const RankScreen = ({ newMovie, rankedIds, eloScores, onComplete, onCance
     if (userId && session) {
       // Map Elo to a 1–10 score. 1500 is the default rating; ±20 per step.
       const score = Math.min(10, Math.max(1, Math.round((localEloFinal[newMovie.id] - 1400) / 20)));
-      await API.addRanking(userId, newMovie.id, score, session);
+      // Forward metadata so the backend can auto-create the movie row when
+      // we're ranking a TMDB-sourced film it hasn't seen before.
+      const movieMeta = {
+        title: newMovie.title,
+        genre: newMovie.genres?.[0]?.name || null,
+        poster_url: newMovie.poster_url || null,
+        year: newMovie.release_year || null,
+      };
+      await API.addRanking(userId, newMovie.id, score, session, movieMeta);
     }
     onComplete(localEloFinal, finalIds);
   };
@@ -56,7 +64,7 @@ export const RankScreen = ({ newMovie, rankedIds, eloScores, onComplete, onCance
   if (done && insertPos !== null) {
     const finalIds = [...rankedIds];
     finalIds.splice(insertPos, 0, newMovie.id);
-    const ranked = finalIds.map((id) => MOVIES.find((m) => m.id === id)).filter(Boolean);
+    const ranked = finalIds.map((id) => findMovieSync(id)).filter(Boolean);
     return (
       <div style={{ height: "100%", overflowY: "auto" }}>
         <div style={{ padding: "8px 22px 6px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -91,8 +99,8 @@ export const RankScreen = ({ newMovie, rankedIds, eloScores, onComplete, onCance
   }
 
   if (!opponent) return null;
-  const chosen = result ? MOVIES.find((m) => m.id === result.chosenId) : null;
-  const other = result ? MOVIES.find((m) => m.id === result.otherId) : null;
+  const chosen = result ? findMovieSync(result.chosenId) : null;
+  const other = result ? findMovieSync(result.otherId) : null;
   const totalComps = Math.max(1, Math.ceil(Math.log2(rankedIds.length + 1)));
 
   return (

@@ -394,7 +394,7 @@ export const ProfileScreen = ({
         </>}
 
         {tab === "saved" && <>
-          <div style={{ display: "flex", gap: 5, overflowX: "auto", paddingBottom: 4 }}>
+          <div className="no-scrollbar" style={{ display: "flex", gap: 5, overflowX: "auto", paddingBottom: 4 }}>
             {savedGenres.map((g) => (
               <span key={g} onClick={() => setSavedGenreFilter(g)}
                 style={{ flexShrink: 0, padding: "4px 11px", borderRadius: 16, fontSize: 9, fontFamily: "monospace", fontWeight: 600, cursor: "pointer", background: savedGenreFilter === g ? W.accentDim : W.card, border: `1px solid ${savedGenreFilter === g ? W.accent : W.border}`, color: savedGenreFilter === g ? W.accent : W.dim }}>{g}</span>

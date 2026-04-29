@@ -202,16 +202,43 @@ class AuthService:
 
 # ─── Ranking Service ──────────────────────────────────────────────────────────
 
+def ensure_movie_exists(db: Session, movie_id: str, meta: Optional[dict] = None) -> MovieRow:
+    """Resolve a movie row, auto-creating it if the client supplied metadata.
+
+    The seed catalog only contains the 5 hardcoded films; TMDB-sourced movies
+    arrive with `tmdb-{id}` and aren't in our table yet. When the frontend
+    ranks/saves/watchlist/reviews one of these, it sends the title/poster/etc
+    alongside the request — we insert a row on first reference so foreign-key
+    constraints hold and subsequent lookups (leaderboard, search, etc.) work.
+    Without `meta` we still raise ValueError to preserve the legacy contract.
+    """
+    existing = db.get(MovieRow, movie_id)
+    if existing:
+        return existing
+    if not meta or not meta.get("title"):
+        raise ValueError(f"Movie {movie_id} not found")
+    row = MovieRow(
+        movie_id=movie_id,
+        title=meta["title"],
+        genre=meta.get("genre"),
+        poster_url=meta.get("poster_url"),
+        year=meta.get("year"),
+    )
+    db.add(row)
+    db.flush()  # FKs in the same transaction can see it without committing
+    return row
+
+
 class RankingService:
     """add_ranking, user_rankings, average_score, top_movies, record_pairwise."""
 
-    def add_ranking(self, db: Session, user_id: str, movie_id: str, score: int) -> RankingRow:
+    def add_ranking(self, db: Session, user_id: str, movie_id: str, score: int,
+                    movie_meta: Optional[dict] = None) -> RankingRow:
         if not 1 <= score <= 10:
             raise ValueError("Score must be between 1 and 10")
         if not db.get(UserRow, user_id):
             raise ValueError(f"User {user_id} not found")
-        if not db.get(MovieRow, movie_id):
-            raise ValueError(f"Movie {movie_id} not found")
+        ensure_movie_exists(db, movie_id, movie_meta)
         # Upsert: drop any existing (user, movie) row, then insert.
         db.execute(
             delete(RankingRow).where(
@@ -472,9 +499,9 @@ class WatchlistService:
 # ─── Saved-Movies Service ─────────────────────────────────────────────────────
 
 class SavedMovieService:
-    def add(self, db: Session, user_id: str, movie_id: str) -> None:
-        if not db.get(MovieRow, movie_id):
-            raise ValueError(f"Movie {movie_id} not found")
+    def add(self, db: Session, user_id: str, movie_id: str,
+            movie_meta: Optional[dict] = None) -> None:
+        ensure_movie_exists(db, movie_id, movie_meta)
         existing = db.execute(
             select(SavedRow).where(
                 SavedRow.user_id == user_id,
@@ -509,11 +536,11 @@ class SavedMovieService:
 # ─── Review Service ───────────────────────────────────────────────────────────
 
 class ReviewService:
-    def submit(self, db: Session, user_id: str, movie_id: str, rating: int, text: str) -> ReviewRow:
+    def submit(self, db: Session, user_id: str, movie_id: str, rating: int, text: str,
+               movie_meta: Optional[dict] = None) -> ReviewRow:
         if not db.get(UserRow, user_id):
             raise ValueError(f"User {user_id} not found")
-        if not db.get(MovieRow, movie_id):
-            raise ValueError(f"Movie {movie_id} not found")
+        ensure_movie_exists(db, movie_id, movie_meta)
         if not 1 <= rating <= 10:
             raise ValueError("Rating must be between 1 and 10")
         text = (text or "").strip()

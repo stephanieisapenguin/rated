@@ -191,7 +191,7 @@ export const HomeScreen = ({
           </TapTarget>
         </div>}
         <div style={{ fontSize: 11, fontWeight: 700, color: W.dim, fontFamily: "monospace", letterSpacing: 1.5 }}>HIGHLIGHTS</div>
-        <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 4 }}>
+        <div className="no-scrollbar" style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 4 }}>
           {highlights.map((m) => (
             <div key={m.id} style={{ flexShrink: 0, width: 105 }}>
               <div style={{ position: "relative", cursor: "pointer" }} onClick={() => onSelectMovie(m)}>

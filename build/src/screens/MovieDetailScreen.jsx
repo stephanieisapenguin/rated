@@ -199,7 +199,7 @@ export const MovieDetailScreen = ({
         )}
         {m.cast?.length > 0 && m.cast[0].name !== "TBA" && <>
           <div style={{ fontSize: 10, fontWeight: 700, color: W.dim, fontFamily: "monospace", letterSpacing: 1, marginTop: 4 }}>CAST</div>
-          <div style={{ display: "flex", gap: 10, overflowX: "auto" }}>
+          <div className="no-scrollbar" style={{ display: "flex", gap: 10, overflowX: "auto" }}>
             {m.cast.slice(0, 5).map((c, i) => (
               <div key={i} style={{ textAlign: "center", flexShrink: 0 }}>
                 <div style={{ width: 40, height: 40, borderRadius: "50%", background: W.card, border: `1px solid ${W.border}`, margin: "0 auto 3px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>👤</div>

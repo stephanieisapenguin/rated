@@ -254,9 +254,20 @@ def _seed_initial(db: Session) -> None:
 class LoginRequest(BaseModel):
     id_token: str  # stub format: "sub|name|email"
 
+# Optional metadata sent alongside any movie-mutating request. The backend
+# auto-creates the movie row when a TMDB-sourced film is referenced for the
+# first time — see ensure_movie_exists in rated_backend. Title is the only
+# required field for that path; the rest are best-effort for nicer display.
+class MovieMeta(BaseModel):
+    title: Optional[str] = None
+    genre: Optional[str] = None
+    poster_url: Optional[str] = None
+    year: Optional[int] = None
+
 class RankRequest(BaseModel):
     movie_id: str
     score: int
+    movie_meta: Optional[MovieMeta] = None
 
 class PairwiseRequest(BaseModel):
     winner_movie_id: str
@@ -274,11 +285,13 @@ class UsernameClaimRequest(BaseModel):
 
 class SavedAddRequest(BaseModel):
     movie_id: str
+    movie_meta: Optional[MovieMeta] = None
 
 class ReviewSubmitRequest(BaseModel):
     movie_id: str
     rating: int
     text: str
+    movie_meta: Optional[MovieMeta] = None
 
 class PrivacyUpdateRequest(BaseModel):
     is_private: bool
@@ -636,6 +649,7 @@ def add_ranking(
     try:
         ranking = app_instance.ranking_service.add_ranking(
             db, user_id, body.movie_id, body.score,
+            movie_meta=body.movie_meta.dict() if body.movie_meta else None,
         )
         return ranking.to_dict()
     except ValueError as e:
@@ -816,7 +830,10 @@ def add_saved(
     db: Session = Depends(get_db),
 ):
     try:
-        app_instance.saved_service.add(db, user_id, body.movie_id)
+        app_instance.saved_service.add(
+            db, user_id, body.movie_id,
+            movie_meta=body.movie_meta.dict() if body.movie_meta else None,
+        )
         return {"ok": True, "movie_id": body.movie_id}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -852,6 +869,7 @@ def submit_review(
     try:
         review = app_instance.review_service.submit(
             db, user_id, body.movie_id, body.rating, body.text,
+            movie_meta=body.movie_meta.dict() if body.movie_meta else None,
         )
         return review.to_dict()
     except ValueError as e:

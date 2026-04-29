@@ -13,6 +13,7 @@ import { HomeScreen } from "./screens/HomeScreen";
 import { SearchScreen } from "./screens/SearchScreen";
 import { ProfileScreen } from "./screens/ProfileScreen";
 import { RankScreen } from "./screens/RankScreen";
+import { OnboardingRank } from "./screens/OnboardingRank";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { NotificationSettings } from "./screens/NotificationSettings";
 import { Toggle } from "./components/Toggle";
@@ -360,6 +361,14 @@ function AppInner() {
   // Clean up pending toast timeout on unmount
   useEffect(()=>()=>{if(toastTimeoutRef.current)clearTimeout(toastTimeoutRef.current);},[]);
   const [screen,setScreen]=useState("home");
+  // First-run tutorial — show OnboardingRank after username claim until the
+  // user ranks 5 films or skips. Persists in localStorage so a refresh
+  // mid-tutorial doesn't drop you back into it after you've moved on.
+  const [onboardingActive,setOnboardingActive]=useState(false);
+  const [onboardingDone,setOnboardingDone]=useState(()=>{
+    if (typeof localStorage==="undefined") return false;
+    return localStorage.getItem("rated_onboarding_done")==="1";
+  });
   const [selectedMovie,setSelectedMovie]=useState(null);
   const [selectedUpcoming,setSelectedUpcoming]=useState(null);
   const [selectedUser,setSelectedUser]=useState(null);
@@ -717,7 +726,7 @@ function AppInner() {
     setRankedIds(prev=>{
       const newId = ids.find(id=>!prev.includes(id));
       if(newId){
-        const movie = MOVIES.find(m=>m.id===newId);
+        const movie = findMovieSync(newId);
         if(movie){
           const ts = Date.now();
           // Record this rank in history for the streak counter
@@ -749,9 +758,16 @@ function AppInner() {
       return ids;
     });
     setRankMovie(null);
-    setScreen("profile");
-  },[username, displayName]);
-  const onRankCancel=useCallback(()=>{setRankMovie(null);setScreen(selectedMovie?"detail":"home");},[selectedMovie]);
+    // During first-run tutorial, return to onboarding so the user can keep
+    // ranking until they hit the target. Otherwise land on Profile so they
+    // see their updated list.
+    setScreen(onboardingActive ? "onboarding-rank" : "profile");
+  },[username, displayName, onboardingActive]);
+  const onRankCancel=useCallback(()=>{
+    setRankMovie(null);
+    if (onboardingActive) { setScreen("onboarding-rank"); return; }
+    setScreen(selectedMovie?"detail":"home");
+  },[selectedMovie, onboardingActive]);
 
   // Toggle a movie in the user's watchlist. Optimistic update — UI flips immediately,
   // then we hit the backend. If the backend call fails, roll back the local change
@@ -791,7 +807,23 @@ function AppInner() {
     }
   };
 
-  const handleUsernameComplete=(u, name)=>{setUsername(u);if(name)setDisplayName(name);setAuthState("logged-in");};
+  const handleUsernameComplete=(u, name)=>{
+    setUsername(u);
+    if(name)setDisplayName(name);
+    setAuthState("logged-in");
+    // First-run tutorial: only fresh accounts (no rankings yet) and only if
+    // they haven't already finished/skipped onboarding in a prior session.
+    if (!onboardingDone && rankedIds.length===0) {
+      setOnboardingActive(true);
+      setScreen("onboarding-rank");
+    }
+  };
+  const finishOnboarding=useCallback(()=>{
+    setOnboardingActive(false);
+    setOnboardingDone(true);
+    if (typeof localStorage!=="undefined") localStorage.setItem("rated_onboarding_done","1");
+    setScreen("home");
+  },[]);
 
   // Load watchlist from backend on login. The backend's GET /users/{id}/watchlist
   // returns an array of movie_ids directly (not wrapped in an object). If the API
@@ -868,6 +900,7 @@ function AppInner() {
   const content=()=>{
     if(authState==="logged-out") return <LoginScreen onLogin={handleLogin}/>;
     if(authState==="choosing-username") return <UsernameScreen provider={loginProvider} session={session} onComplete={handleUsernameComplete}/>;
+    if(screen==="onboarding-rank") return <OnboardingRank rankedCount={rankedIds.length} onPickMovie={onRank} onSkip={finishOnboarding} onDone={finishOnboarding}/>;
     if(screen==="home") return <HomeScreen onNav={onNav} onSelectMovie={onSelectMovie} session={session} userId={userId} username={username} unreadCount={unreadCount} blockedUsers={blockedUsers} blockUser={blockUser} reportContent={reportContent} rateLimitedFollow={rateLimitedFollow} followingHandles={followingHandles} toggleFollowHandle={toggleFollowHandle} onSelectUser={onSelectUser} userFeedItems={userFeedItems} onRank={onRank} savedMovies={savedMovies} toggleSavedMovie={toggleSavedMovie} feedLikes={feedLikes} toggleFeedLike={toggleFeedLike} showToast={showToast}/>;
     if(screen==="detail") return <div style={{display:"flex",flexDirection:"column",height:"100%"}}><div style={{flex:1,overflowY:"auto"}}><MovieDetailScreen movie={selectedMovie} onBack={onBack} onRank={onRank} watchlist={watchlist} onToggleWatchlist={onToggleWatchlist} followingHandles={followingHandles} onSelectUser={onSelectUser} onSubmitReview={handleSubmitReview} savedMovies={savedMovies} toggleSavedMovie={toggleSavedMovie} showToast={showToast}/></div></div>;
     if(screen==="upcoming") return <UpcomingScreen onNav={onNav} onSelectUpcoming={onSelectUpcoming} watchlist={watchlist} onToggleWatchlist={onToggleWatchlist}/>;
@@ -960,6 +993,10 @@ const A11Y_CSS = `
   0% { transform: translateX(-100%); }
   100% { transform: translateX(100%); }
 }
+/* Horizontal carousels keep scroll behavior but hide the bar — see e.g. the
+   highlights row on Home, genre filter chips on Upcoming. */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
 `;
 const useA11yStyles = () => {
   useEffect(() => {
