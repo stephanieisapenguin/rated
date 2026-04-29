@@ -57,4 +57,24 @@ export const API = {
   topMovies:         ()                              => api("GET",  "/movies/top"),
   movieStats:        (movie_id)                      => api("GET",  `/movies/${movie_id}/stats`),
   searchUsers:       (q, limit = 20)                 => api("GET",  `/users?q=${encodeURIComponent(q)}&limit=${limit}`),
+  deleteAccount:     (uid, token)                    => api("DELETE", `/users/${uid}`, null, token),
 };
+
+// Login variant that surfaces backend error details — the bare `api` wrapper
+// returns null on any non-2xx so the rest of the app can fall back to mock
+// data, but for login we want to actually tell the user *why* it failed
+// (invalid token, server down, etc.) instead of a generic "couldn't connect".
+export async function loginRaw(id_token) {
+  try {
+    const res = await fetch(`${API_BASE}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id_token }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: body.detail || `HTTP ${res.status}` };
+    return { ok: true, data: body };
+  } catch (e) {
+    return { ok: false, error: e.message || "Network error — check your connection." };
+  }
+}

@@ -573,6 +573,22 @@ def get_user(user_id: str, db: Session = Depends(get_db)):
     return d
 
 
+@app.delete("/users/{user_id}", tags=["Users"])
+def delete_account(
+    user_id: str,
+    _: UserRow = Depends(require_self),
+    db: Session = Depends(get_db),
+):
+    """Permanently delete the user and every row that references them.
+    Auth-gated to require_self — only the user themselves (with a valid
+    Bearer session) can delete their own account."""
+    try:
+        app_instance.delete_account(db, user_id)
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @app.get("/users/by-username/{username}", tags=["Users"])
 def get_user_by_username(username: str, db: Session = Depends(get_db)):
     user = app_instance.auth.find_by_username(db, username)

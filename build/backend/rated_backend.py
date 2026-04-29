@@ -85,12 +85,16 @@ class AuthService:
 
     def google_login(self, db: Session, id_token: str) -> UserRow:
         client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip() or self._DEFAULT_GOOGLE_CLIENT_ID
-        # Real Google JWTs are dot-separated base64 segments and never contain
-        # a pipe character. The stub format "sub|name|email" is dev-only — and
-        # also currently the only thing the Apple button sends until we ship
-        # real Sign-in-with-Apple. Detect by delimiter so JWT-strict mode
-        # still works for Google but the Apple stub also passes through.
+        # Stub format "sub|name|email" is dev-only and currently the only
+        # thing the Apple button sends until we ship real Sign-in-with-Apple.
+        # Real Google JWTs are dot-segmented and never contain pipes.
+        # ALLOW_STUB_AUTH defaults to "1" today so existing flows keep
+        # working; flip it to "0" before shipping publicly to lock down
+        # impersonation via stub.
+        allow_stub = os.environ.get("ALLOW_STUB_AUTH", "1").strip() != "0"
         if "|" in id_token:
+            if not allow_stub:
+                raise ValueError("Stub auth disabled — pass a real Google JWT.")
             sub, name, email = self._parse_stub(id_token)
         elif client_id:
             sub, name, email = self._verify_google_jwt(id_token, client_id)
@@ -718,6 +722,33 @@ class App:
         self.saved_service         = SavedMovieService()
         self.review_service        = ReviewService()
         self.notification_service  = NotificationService()
+
+    def delete_account(self, db: Session, user_id: str) -> None:
+        """Cascade-delete a user and every row that references them.
+
+        Done explicitly (not via SQLAlchemy ORM cascade) because the rows
+        live across multiple tables and we want a single transaction. Order
+        matters: child rows first, user last, so FK constraints stay
+        satisfied throughout. Notifications are deleted on both the
+        recipient and actor sides — leaving an actor orphan would crash
+        the feed renderer next time someone fetched it.
+        """
+        if not db.get(UserRow, user_id):
+            raise ValueError(f"User {user_id} not found")
+        db.execute(delete(SessionRow).where(SessionRow.user_id == user_id))
+        db.execute(delete(RankingRow).where(RankingRow.user_id == user_id))
+        db.execute(delete(PairwiseRow).where(PairwiseRow.user_id == user_id))
+        db.execute(delete(WatchlistRow).where(WatchlistRow.user_id == user_id))
+        db.execute(delete(SavedRow).where(SavedRow.user_id == user_id))
+        db.execute(delete(ReviewRow).where(ReviewRow.user_id == user_id))
+        db.execute(delete(FollowRow).where(
+            (FollowRow.follower_id == user_id) | (FollowRow.followee_id == user_id)
+        ))
+        db.execute(delete(NotificationRow).where(
+            (NotificationRow.user_id == user_id) | (NotificationRow.actor_id == user_id)
+        ))
+        db.execute(delete(UserRow).where(UserRow.user_id == user_id))
+        db.commit()
 
     def seed_movies(self, db: Session, movies: list[MovieRow]) -> None:
         for m in movies:

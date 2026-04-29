@@ -71,7 +71,7 @@ import { computeStreak } from "./lib/streak";
 import { FOLLOW_LIMIT_PER_HOUR, FOLLOW_WINDOW_MS } from "./lib/moderation";
 import { checkProfanity } from "./lib/profanity";
 import { TAKEN_USERNAMES } from "./lib/usernames";
-import { API, API_BASE } from "./lib/api";
+import { API, API_BASE, loginRaw } from "./lib/api";
 import { googleClientConfigured, promptGoogleSignIn } from "./lib/googleSignin";
 
 // Persisted session lives in this localStorage key. Wiped on logout. Includes
@@ -682,9 +682,9 @@ function AppInner() {
       return filtered;
     });
   },[]);
-  const handleDeleteAccount=useCallback(()=>{
-    // In production: call DELETE /users/me API here.
-    // Then wipe all local state and return to logged-out.
+  // State-only logout. Both sign-out and delete-account funnel through
+  // this; delete adds a backend hit before invoking it.
+  const clearLocalAuth=useCallback(()=>{
     if (typeof localStorage !== "undefined") localStorage.removeItem(AUTH_STORAGE_KEY);
     setAuthState("logged-out");
     setLoginProvider(null);
@@ -715,12 +715,22 @@ function AppInner() {
     setSettingsSection(null);
     navStack.current = [];
   },[]);
-  // Sign out and account-delete share the same local-state wipe — only the
-  // server-side intent differs (delete also calls DELETE /users/me when wired).
+  // Sign out: just clear local state. The server-side session row will
+  // expire on its own; revoking it explicitly via /auth/logout is a future
+  // hardening pass.
   const handleSignOut=useCallback(()=>{
-    // TODO: hit POST /auth/logout to revoke the session token server-side.
-    handleDeleteAccount();
-  },[handleDeleteAccount]);
+    clearLocalAuth();
+  },[clearLocalAuth]);
+  // Permanent delete: hit DELETE /users/{id} first so the row really goes
+  // away in the database, then run the same local clear. We swallow API
+  // errors so a network blip still gets the user logged out locally —
+  // they can retry the delete after re-authing.
+  const handleDeleteAccount=useCallback(async()=>{
+    if (userId && session) {
+      try { await API.deleteAccount(userId, session); } catch (e) { /* swallow */ }
+    }
+    clearLocalAuth();
+  },[userId, session, clearLocalAuth]);
   const onBackFromSettings=useCallback(()=>{setSettingsSection(null);setScreen("profile");},[]);
   const onRank=useCallback(m=>{setRankMovie(m);setScreen("rank");},[]);
   // Re-rank: clear the existing ranking + ELO for this movie, then enter rank flow again.
@@ -822,7 +832,16 @@ function AppInner() {
         ? "sub_apple_demo|Apple User|user@icloud.com"
         : "sub_google_demo|Google User|user@gmail.com";
     }
-    const res = await API.login(idToken);
+    // loginRaw surfaces real backend errors (token rejected, etc.) instead
+    // of the api wrapper's generic null-on-error behavior. The plain
+    // API.login is still fine for retries — only the first auth attempt
+    // benefits from the detailed error.
+    const result = await loginRaw(idToken);
+    if (!result.ok) {
+      showToast(result.error, "error");
+      return;
+    }
+    const res = result.data;
     if (res && res.user) {
       // Save session + user_id; persist them so reloads skip login.
       setSession(res.session_token);
