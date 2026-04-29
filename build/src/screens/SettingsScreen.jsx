@@ -18,7 +18,7 @@ export const SettingsScreen = ({
   onUpdateUsername, onUpdatePrivacy, onUpdateDisplayName, onUpdateBio, onUpdateProfilePic,
   initialSection = null,
   blockedUsers = new Set(), onUnblock,
-  onDeleteAccount,
+  onSignOut, onDeleteAccount,
   themeMode = "dark", fontScale = 1.0, onSetThemeMode, onSetFontScale,
   lastUsernameChangeTs = null, onUsernameChanged,
   showToast,
@@ -150,7 +150,8 @@ export const SettingsScreen = ({
               <span style={{ color: W.dim, fontSize: 16 }}>›</span>
             </div>
           ))}
-          <div style={{ marginTop: 8, padding: "12px 14px", background: W.accentDim, border: `1px solid ${W.accent}33`, borderRadius: 12, cursor: "pointer", textAlign: "center" }}>
+          <div onClick={() => onSignOut && onSignOut()}
+            style={{ marginTop: 8, padding: "12px 14px", background: W.accentDim, border: `1px solid ${W.accent}33`, borderRadius: 12, cursor: "pointer", textAlign: "center" }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: W.accent, fontFamily: "monospace" }}>Sign Out</div>
           </div>
           <div style={{ textAlign: "center", marginTop: 4, fontSize: 9, color: W.dim, fontFamily: "monospace" }}>RATED v1.0.0</div>

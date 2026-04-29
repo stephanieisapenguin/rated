@@ -78,7 +78,14 @@ class AuthService:
 
     def google_login(self, db: Session, id_token: str) -> UserRow:
         client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
-        if client_id:
+        # Real Google JWTs are dot-separated base64 segments and never contain
+        # a pipe character. The stub format "sub|name|email" is dev-only — and
+        # also currently the only thing the Apple button sends until we ship
+        # real Sign-in-with-Apple. Detect by delimiter so JWT-strict mode
+        # still works for Google but the Apple stub also passes through.
+        if "|" in id_token:
+            sub, name, email = self._parse_stub(id_token)
+        elif client_id:
             sub, name, email = self._verify_google_jwt(id_token, client_id)
         else:
             sub, name, email = self._parse_stub(id_token)

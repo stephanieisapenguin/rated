@@ -715,6 +715,12 @@ function AppInner() {
     setSettingsSection(null);
     navStack.current = [];
   },[]);
+  // Sign out and account-delete share the same local-state wipe — only the
+  // server-side intent differs (delete also calls DELETE /users/me when wired).
+  const handleSignOut=useCallback(()=>{
+    // TODO: hit POST /auth/logout to revoke the session token server-side.
+    handleDeleteAccount();
+  },[handleDeleteAccount]);
   const onBackFromSettings=useCallback(()=>{setSettingsSection(null);setScreen("profile");},[]);
   const onRank=useCallback(m=>{setRankMovie(m);setScreen("rank");},[]);
   // Re-rank: clear the existing ranking + ELO for this movie, then enter rank flow again.
@@ -984,7 +990,7 @@ function AppInner() {
     if(screen==="search") return <SearchScreen onNav={onNav} onSelectMovie={onSelectMovie} onSelectUser={onSelectUser} followingHandles={followingHandles} toggleFollowHandle={toggleFollowHandle} rateLimitedFollow={rateLimitedFollow} searchHistory={searchHistory} addSearchHistory={addSearchHistory} clearSearchHistory={clearSearchHistory} removeSearchHistoryItem={removeSearchHistoryItem} username={username} showToast={showToast}/>;
     if(screen==="notifications") return <NotificationsScreen onNav={onNav} isPrivate={isPrivate} onMarkAllRead={()=>setUnreadCount(0)} blockedUsers={blockedUsers} toggleFollowHandle={toggleFollowHandle} followingHandles={followingHandles} approveFollower={approveFollower} onSelectUser={onSelectUser} rateLimitedFollow={rateLimitedFollow}/>;
     if(screen==="profile") return <ProfileScreen onNav={onNav} onSelectMovie={onSelectMovie} rankedIds={rankedIds} eloScores={eloScores} watchlist={watchlist} onSelectUpcoming={onSelectUpcoming} onToggleWatchlist={onToggleWatchlist} username={username} displayName={displayName} userBio={userBio} profilePic={profilePic} isPrivate={isPrivate} onOpenSettings={onOpenSettings} session={session} userId={userId} reportContent={reportContent} rateLimitedFollow={rateLimitedFollow} followingHandles={followingHandles} toggleFollowHandle={toggleFollowHandle} approvedFollowers={approvedFollowers} userReviews={userReviews} onUnrank={handleUnrank} onReorderRanking={handleReorderRanking} onRank={onRank} onReRank={onReRank} savedMovies={savedMovies} toggleSavedMovie={toggleSavedMovie} onEditReview={handleEditReview} onDeleteReview={handleDeleteReview} showToast={showToast} streakInfo={streakInfo}/>;
-    if(screen==="settings") return <SettingsScreen onBack={onBackFromSettings} username={username} displayName={displayName} userBio={userBio} profilePic={profilePic} isPrivate={isPrivate} onUpdateUsername={setUsername} onUpdatePrivacy={setIsPrivate} onUpdateDisplayName={setDisplayName} onUpdateBio={setUserBio} onUpdateProfilePic={setProfilePic} initialSection={settingsSection} blockedUsers={blockedUsers} onUnblock={unblockUser} onDeleteAccount={handleDeleteAccount} themeMode={themeMode} fontScale={fontScale} onSetThemeMode={setThemeMode} onSetFontScale={setFontScale} lastUsernameChangeTs={lastUsernameChangeTs} onUsernameChanged={()=>setLastUsernameChangeTs(Date.now())} showToast={showToast}/>;
+    if(screen==="settings") return <SettingsScreen onBack={onBackFromSettings} username={username} displayName={displayName} userBio={userBio} profilePic={profilePic} isPrivate={isPrivate} onUpdateUsername={setUsername} onUpdatePrivacy={setIsPrivate} onUpdateDisplayName={setDisplayName} onUpdateBio={setUserBio} onUpdateProfilePic={setProfilePic} initialSection={settingsSection} blockedUsers={blockedUsers} onUnblock={unblockUser} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} themeMode={themeMode} fontScale={fontScale} onSetThemeMode={setThemeMode} onSetFontScale={setFontScale} lastUsernameChangeTs={lastUsernameChangeTs} onUsernameChanged={()=>setLastUsernameChangeTs(Date.now())} showToast={showToast}/>;
     if(screen==="rank"&&rankMovie){
       if(rankedIds.includes(rankMovie.id)){
         // Edge case — should rarely trigger since onReRank clears first.
@@ -1067,8 +1073,12 @@ const A11Y_CSS = `
   0% { transform: translateX(-100%); }
   100% { transform: translateX(100%); }
 }
-/* Horizontal carousels keep scroll behavior but hide the bar — see e.g. the
-   highlights row on Home, genre filter chips on Upcoming. */
+/* Hide all scrollbars app-wide — this is a mobile-styled UI; native iOS
+   apps don't show scroll tracks. Scroll behavior itself is unaffected.
+   Keep the .no-scrollbar class as a noop alias so existing markup works
+   if we ever need to override the rule on a single element. */
+*::-webkit-scrollbar { display: none; }
+* { scrollbar-width: none; -ms-overflow-style: none; }
 .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
 `;
