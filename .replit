@@ -28,12 +28,17 @@ build = ["sh", "-c", "cd build/backend && pip install -r requirements.txt"]
 run = ["sh", "-c", "cd build/backend && alembic upgrade head && uvicorn api:app --host 0.0.0.0 --port $PORT"]
 ignorePorts = false
 
-# Environment variables. Anything sensitive (GOOGLE_CLIENT_ID, DATABASE_URL)
-# should be set in Replit → Secrets, not here, since this file is in git.
+# Environment variables. GOOGLE_CLIENT_ID is the OAuth *client ID* — Google
+# designed it to be public (it's already in the frontend JS bundle), so
+# committing it here is fine and survives Replit Autoscale's habit of
+# wiping deployment secrets between redeploys. Anything actually sensitive
+# (DATABASE_URL, TMDB_API_KEY, the OAuth client *secret* if we ever needed
+# one) still belongs in Replit → Secrets.
 [env]
-ALLOWED_ORIGINS    = "https://silver-salamander-08daf4.netlify.app"
+ALLOWED_ORIGINS     = "https://silver-salamander-08daf4.netlify.app"
 SESSION_TTL_SECONDS = "2592000"
-PYTHONUNBUFFERED   = "1"
+PYTHONUNBUFFERED    = "1"
+GOOGLE_CLIENT_ID    = "830176116158-iu98jg23p45sgetoimbjei6mce4ifofu.apps.googleusercontent.com"
 
 [[hints]]
 regex = ".*ModuleNotFoundError.*"
