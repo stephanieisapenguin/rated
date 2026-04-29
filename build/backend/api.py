@@ -296,6 +296,16 @@ class ReviewSubmitRequest(BaseModel):
 class PrivacyUpdateRequest(BaseModel):
     is_private: bool
 
+class ReportRequest(BaseModel):
+    target_type:  str
+    target_id:    str
+    target_label: Optional[str] = None
+    reason_key:   str
+    reason_label: Optional[str] = None
+
+class FeedReplyRequest(BaseModel):
+    body: str
+
 
 # ─── Health ──────────────────────────────────────────────────────────────────
 
@@ -1058,6 +1068,71 @@ def mark_all_notifications_read(user_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
     n = app_instance.notification_service.mark_all_read(db, user_id)
     return {"ok": True, "marked_read": n}
+
+
+# ─── Reports ──────────────────────────────────────────────────────────────────
+
+@app.post("/users/{user_id}/reports", tags=["Reports"])
+def submit_report(
+    user_id: str,
+    body: ReportRequest,
+    _: UserRow = Depends(require_self),
+    db: Session = Depends(get_db),
+):
+    try:
+        report = app_instance.report_service.submit(
+            db, user_id, body.target_type, body.target_id, body.target_label,
+            body.reason_key, body.reason_label,
+        )
+        return report.to_dict()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ─── Feed likes ──────────────────────────────────────────────────────────────
+
+@app.post("/users/{user_id}/feed-likes/{item_id}", tags=["Feed"])
+def toggle_feed_like(
+    user_id: str,
+    item_id: str,
+    _: UserRow = Depends(require_self),
+    db: Session = Depends(get_db),
+):
+    try:
+        liked = app_instance.feed_like_service.toggle(db, user_id, item_id)
+        return {"item_id": item_id, "liked": liked}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/users/{user_id}/feed-likes", tags=["Feed"])
+def list_feed_likes(user_id: str, db: Session = Depends(get_db)):
+    if not db.get(UserRow, user_id):
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+    return {"item_ids": app_instance.feed_like_service.list_for_user(db, user_id)}
+
+
+# ─── Feed replies ────────────────────────────────────────────────────────────
+
+@app.post("/users/{user_id}/feed-replies/{item_id}", tags=["Feed"])
+def add_feed_reply(
+    user_id: str,
+    item_id: str,
+    body: FeedReplyRequest,
+    _: UserRow = Depends(require_self),
+    db: Session = Depends(get_db),
+):
+    try:
+        reply = app_instance.feed_reply_service.add(db, user_id, item_id, body.body)
+        return reply.to_dict()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/feed-items/{item_id}/replies", tags=["Feed"])
+def list_feed_replies(item_id: str, limit: int = 50, db: Session = Depends(get_db)):
+    """Public — anyone can read replies. Posting still requires auth."""
+    return {"replies": app_instance.feed_reply_service.list_for_item(db, item_id, limit=limit)}
 
 
 @app.delete("/users/{user_id}/notifications/{notification_id}", tags=["Notifications"])

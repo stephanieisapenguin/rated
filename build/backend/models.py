@@ -208,3 +208,78 @@ class NotificationRow(Base):
             "read":       bool(self.read),
             "created_at": self.created_at,
         }
+
+
+class ReportRow(Base):
+    """User-submitted moderation report. target_type tells the moderator what
+    kind of item was reported ("review", "feed", "user", "comment"); target_id
+    is the string id from the frontend (rankings.id, reviews.id, or a mock
+    feed item id like 'f-001'). Free-form by design — moderation triage will
+    cluster these manually."""
+    __tablename__ = "reports"
+    __table_args__ = (
+        Index("ix_reports_reporter", "reporter_id"),
+        Index("ix_reports_target_type", "target_type", "target_id"),
+    )
+
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    reporter_id   = Column(String, ForeignKey("users.user_id"), nullable=False)
+    target_type   = Column(String, nullable=False)
+    target_id     = Column(String, nullable=False)
+    target_label  = Column(String, nullable=True)
+    reason_key    = Column(String, nullable=False)
+    reason_label  = Column(String, nullable=True)
+    created_at    = Column(Float, nullable=False, default=lambda: time.time())
+
+    def to_dict(self):
+        return {
+            "id":           self.id,
+            "reporter_id":  self.reporter_id,
+            "target_type":  self.target_type,
+            "target_id":    self.target_id,
+            "target_label": self.target_label,
+            "reason_key":   self.reason_key,
+            "reason_label": self.reason_label,
+            "created_at":   self.created_at,
+        }
+
+
+class FeedLikeRow(Base):
+    """A like on a feed item. item_id is the string the frontend uses for the
+    item (rankings.id, reviews.id, or a mock id like 'f-001'). Composite
+    unique on (user_id, item_id) so a user can't double-like."""
+    __tablename__ = "feed_likes"
+    __table_args__ = (
+        UniqueConstraint("user_id", "item_id", name="uq_feed_likes_user_item"),
+        Index("ix_feed_likes_item", "item_id"),
+    )
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    user_id     = Column(String, ForeignKey("users.user_id"), nullable=False)
+    item_id     = Column(String, nullable=False)
+    created_at  = Column(Float, nullable=False, default=lambda: time.time())
+
+
+class FeedReplyRow(Base):
+    """A public reply to a feed item. Same item_id contract as FeedLikeRow.
+    Body is capped to 280 chars at the API layer to match the frontend's
+    Twitter-style input."""
+    __tablename__ = "feed_replies"
+    __table_args__ = (
+        Index("ix_feed_replies_item", "item_id", "created_at"),
+    )
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    user_id     = Column(String, ForeignKey("users.user_id"), nullable=False)
+    item_id     = Column(String, nullable=False)
+    body        = Column(Text, nullable=False)
+    created_at  = Column(Float, nullable=False, default=lambda: time.time())
+
+    def to_dict(self):
+        return {
+            "id":         self.id,
+            "user_id":    self.user_id,
+            "item_id":    self.item_id,
+            "body":       self.body,
+            "created_at": self.created_at,
+        }

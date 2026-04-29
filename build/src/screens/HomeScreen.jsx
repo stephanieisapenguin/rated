@@ -130,10 +130,49 @@ export const HomeScreen = ({
     if (trimmed.length > 280) return;
     const myHandle = username ? `@${username}` : "@you";
     const myAvatar = (username || "Y")[0].toUpperCase();
+    // Optimistic local insert so the reply appears instantly. Backend post
+    // is fire-and-forget; on the next mount the canonical list re-fetches
+    // from /feed-items/{id}/replies and overwrites the optimistic row.
     setReplies((p) => ({ ...p, [itemId]: [...(p[itemId] || []), { user: myHandle, avatar: myAvatar, text: trimmed, time: "just now", ts: Date.now() }] }));
     setReplyText("");
     setReplyOpen(null);
+    if (userId && session) {
+      API.postFeedReply(userId, itemId, trimmed, session).catch(() => { /* swallow */ });
+    }
   };
+
+  // Hydrate replies for the active feed slice from the backend. We only
+  // fetch for the items currently visible (feed slice that's about to
+  // render) to avoid a separate request per mock seed item. Replies on
+  // mock items will simply be empty arrays from the backend.
+  useEffect(() => {
+    let cancelled = false;
+    const idsToFetch = (feedTab === "following"
+      ? userFeedItems.map((i) => i.id)
+      : [...userFeedItems.map((i) => i.id), ...hydratedGlobalFeed.map((i) => i.id)]
+    ).slice(0, visibleCount);
+    if (idsToFetch.length === 0) return;
+    Promise.all(idsToFetch.map((id) => API.listFeedReplies(id).then((res) => ({ id, replies: res?.replies || [] })))).then((results) => {
+      if (cancelled) return;
+      setReplies((prev) => {
+        const next = { ...prev };
+        results.forEach(({ id, replies: rs }) => {
+          if (rs.length > 0) {
+            next[id] = rs.map((r) => ({
+              user: r.user?.username ? `@${r.user.username}` : "@user",
+              avatar: (r.user?.username || r.user?.name || "?")[0].toUpperCase(),
+              text: r.body,
+              ts: r.created_at ? r.created_at * 1000 : Date.now(),
+              time: "",
+            }));
+          }
+        });
+        return next;
+      });
+    });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [feedTab, visibleCount, userFeedItems.length]);
 
   // Highlights — pull popular films from TMDB; fall back to MOVIES on failure.
   const [tmdbPopularMovies, setTmdbPopularMovies] = useState(null);

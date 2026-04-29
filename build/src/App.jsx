@@ -432,8 +432,27 @@ function AppInner() {
   const [feedLikes,setFeedLikes]=useState({});
   const toggleFeedLike=useCallback((itemId)=>{
     haptic("light");
+    // Optimistic — flip locally first so the heart icon reacts instantly.
+    // The backend call is fire-and-forget; if it 4xx's the user can retry.
     setFeedLikes(p=>({...p,[itemId]:!p[itemId]}));
-  },[]);
+    if (userId && session) {
+      API.toggleFeedLike(userId, itemId, session).catch(() => { /* swallow */ });
+    }
+  },[userId, session]);
+  // Hydrate the feedLikes map from the backend on login so the heart icons
+  // show the user's existing likes when they revisit the app.
+  useEffect(()=>{
+    if (!userId) return;
+    API.listMyFeedLikes(userId).then(res => {
+      if (res?.item_ids) {
+        setFeedLikes(prev => {
+          const next = { ...prev };
+          res.item_ids.forEach(id => { next[id] = true; });
+          return next;
+        });
+      }
+    });
+  },[userId]);
   // Recent search history — most recent first, deduped, capped at 10
   const [searchHistory,setSearchHistory]=useState([]);
   const addSearchHistory=useCallback((q)=>{
@@ -551,10 +570,17 @@ function AppInner() {
   },[showToast]);
   const reportContent=useCallback((type,targetId,targetLabel,reason)=>{
     setReportedItems(p=>[...p,{type,targetId,targetLabel,reason,time:Date.now()}]);
-    // NOTE: this is a local-only record until the backend /reports endpoint is wired up.
-    // The toast copy avoids claiming a specific review timeline.
+    if (userId && session) {
+      API.submitReport(userId, {
+        target_type:  type,
+        target_id:    String(targetId),
+        target_label: targetLabel,
+        reason_key:   reason?.key   || "other",
+        reason_label: reason?.label || null,
+      }, session).catch(() => { /* swallow — local record still stands */ });
+    }
     showToast(`Report received`,"ok");
-  },[showToast]);
+  },[showToast, userId, session]);
 
   // Navigation history stack. Each entry is a snapshot the user can return to.
   // { screen, selectedMovie, selectedUpcoming, selectedUser, settingsSection }
@@ -1024,7 +1050,7 @@ function AppInner() {
     if(screen==="leaderboard") return <LeaderboardScreen onNav={onNav} onSelectMovie={onSelectMovie} onSelectUser={onSelectUser} username={username} displayName={displayName} blockedUsers={blockedUsers} myRankedCount={rankedIds.length} myStreak={streakInfo.count}/>;
     if(screen==="user-profile") return <div style={{display:"flex",flexDirection:"column",height:"100%"}}><div style={{flex:1,overflowY:"auto"}}><UserProfileScreen user={selectedUser} onBack={onBackFromUser} onSelectMovie={onSelectMovie} blockedUsers={blockedUsers} blockUser={blockUser} reportContent={reportContent} rateLimitedFollow={rateLimitedFollow} followingHandles={followingHandles} toggleFollowHandle={toggleFollowHandle}/></div></div>;
     if(screen==="search") return <SearchScreen onNav={onNav} onSelectMovie={onSelectMovie} onSelectUser={onSelectUser} followingHandles={followingHandles} toggleFollowHandle={toggleFollowHandle} rateLimitedFollow={rateLimitedFollow} searchHistory={searchHistory} addSearchHistory={addSearchHistory} clearSearchHistory={clearSearchHistory} removeSearchHistoryItem={removeSearchHistoryItem} username={username} showToast={showToast}/>;
-    if(screen==="notifications") return <NotificationsScreen onNav={onNav} isPrivate={isPrivate} onMarkAllRead={()=>setUnreadCount(0)} blockedUsers={blockedUsers} toggleFollowHandle={toggleFollowHandle} followingHandles={followingHandles} approveFollower={approveFollower} onSelectUser={onSelectUser} rateLimitedFollow={rateLimitedFollow}/>;
+    if(screen==="notifications") return <NotificationsScreen onNav={onNav} userId={userId} isPrivate={isPrivate} onMarkAllRead={()=>setUnreadCount(0)} blockedUsers={blockedUsers} toggleFollowHandle={toggleFollowHandle} followingHandles={followingHandles} approveFollower={approveFollower} onSelectUser={onSelectUser} rateLimitedFollow={rateLimitedFollow}/>;
     if(screen==="profile") return <ProfileScreen onNav={onNav} onSelectMovie={onSelectMovie} rankedIds={rankedIds} eloScores={eloScores} watchlist={watchlist} onSelectUpcoming={onSelectUpcoming} onToggleWatchlist={onToggleWatchlist} username={username} displayName={displayName} userBio={userBio} profilePic={profilePic} isPrivate={isPrivate} onOpenSettings={onOpenSettings} session={session} userId={userId} reportContent={reportContent} rateLimitedFollow={rateLimitedFollow} followingHandles={followingHandles} toggleFollowHandle={toggleFollowHandle} approvedFollowers={approvedFollowers} userReviews={userReviews} onUnrank={handleUnrank} onReorderRanking={handleReorderRanking} onRank={onRank} onReRank={onReRank} savedMovies={savedMovies} toggleSavedMovie={toggleSavedMovie} onEditReview={handleEditReview} onDeleteReview={handleDeleteReview} showToast={showToast} streakInfo={streakInfo}/>;
     if(screen==="settings") return <SettingsScreen onBack={onBackFromSettings} username={username} displayName={displayName} userBio={userBio} profilePic={profilePic} isPrivate={isPrivate} onUpdateUsername={setUsername} onUpdatePrivacy={setIsPrivate} onUpdateDisplayName={setDisplayName} onUpdateBio={setUserBio} onUpdateProfilePic={handleUpdateProfilePic} initialSection={settingsSection} blockedUsers={blockedUsers} onUnblock={unblockUser} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} themeMode={themeMode} fontScale={fontScale} onSetThemeMode={setThemeMode} onSetFontScale={setFontScale} lastUsernameChangeTs={lastUsernameChangeTs} onUsernameChanged={()=>setLastUsernameChangeTs(Date.now())} showToast={showToast}/>;
     if(screen==="rank"&&rankMovie){

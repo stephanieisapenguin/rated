@@ -59,6 +59,17 @@ export const API = {
   searchUsers:       (q, limit = 20)                 => api("GET",  `/users?q=${encodeURIComponent(q)}&limit=${limit}`),
   deleteAccount:     (uid, token)                    => api("DELETE", `/users/${uid}`, null, token),
   updateProfile:     (uid, fields, token)            => api("PATCH",  `/users/${uid}`, fields, token),
+  // Notifications
+  getNotifications:        (uid)                     => api("GET",    `/users/${uid}/notifications`),
+  markNotificationRead:    (uid, nid)                => api("POST",   `/users/${uid}/notifications/${nid}/read`),
+  markAllNotificationsRead:(uid)                     => api("POST",   `/users/${uid}/notifications/mark-all-read`),
+  deleteNotification:      (uid, nid)                => api("DELETE", `/users/${uid}/notifications/${nid}`),
+  // Reports / likes / replies
+  submitReport:      (uid, payload, token)           => api("POST",   `/users/${uid}/reports`, payload, token),
+  toggleFeedLike:    (uid, itemId, token)            => api("POST",   `/users/${uid}/feed-likes/${itemId}`, null, token),
+  listMyFeedLikes:   (uid)                           => api("GET",    `/users/${uid}/feed-likes`),
+  postFeedReply:     (uid, itemId, body, token)      => api("POST",   `/users/${uid}/feed-replies/${itemId}`, { body }, token),
+  listFeedReplies:   (itemId)                        => api("GET",    `/feed-items/${itemId}/replies`),
 };
 
 // Login variant that surfaces backend error details — the bare `api` wrapper

@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 from models import (
     UserRow, MovieRow, RankingRow, PairwiseRow,
     WatchlistRow, SavedRow, ReviewRow, FollowRow, SessionRow,
-    NotificationRow,
+    NotificationRow, ReportRow, FeedLikeRow, FeedReplyRow,
 )
 
 
@@ -734,6 +734,104 @@ class NotificationService:
 
 # ─── App (DI root) ────────────────────────────────────────────────────────────
 
+class ReportService:
+    """User-submitted moderation reports — write-only from the user's perspective.
+    A real moderation queue would expose a list endpoint to admins; for now we
+    just persist the row and trust that the moderator pulls them from the DB."""
+
+    def submit(self, db: Session, reporter_id: str, target_type: str, target_id: str,
+               target_label: Optional[str], reason_key: str,
+               reason_label: Optional[str]) -> ReportRow:
+        if not db.get(UserRow, reporter_id):
+            raise ValueError(f"Reporter {reporter_id} not found")
+        if not target_type or not target_id or not reason_key:
+            raise ValueError("target_type, target_id, and reason_key are required")
+        row = ReportRow(
+            reporter_id=reporter_id,
+            target_type=target_type,
+            target_id=target_id,
+            target_label=target_label,
+            reason_key=reason_key,
+            reason_label=reason_label,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return row
+
+
+class FeedLikeService:
+    """Likes on feed items. item_id is whatever string the frontend uses for
+    the item — could be a real rankings.id or a mock seed id like 'f-001'."""
+
+    def toggle(self, db: Session, user_id: str, item_id: str) -> bool:
+        """Returns the post-toggle liked state (True = now liked, False = now unliked)."""
+        if not db.get(UserRow, user_id):
+            raise ValueError(f"User {user_id} not found")
+        existing = db.execute(
+            select(FeedLikeRow).where(
+                FeedLikeRow.user_id == user_id,
+                FeedLikeRow.item_id == item_id,
+            )
+        ).scalar_one_or_none()
+        if existing:
+            db.delete(existing)
+            db.commit()
+            return False
+        db.add(FeedLikeRow(user_id=user_id, item_id=item_id))
+        db.commit()
+        return True
+
+    def list_for_user(self, db: Session, user_id: str) -> list[str]:
+        """Return all item_ids this user has liked. Frontend uses this to
+        rehydrate the local feedLikes map on login so the heart icons show
+        as filled-in for the user's prior likes."""
+        rows = db.execute(
+            select(FeedLikeRow.item_id).where(FeedLikeRow.user_id == user_id)
+        ).all()
+        return [r[0] for r in rows]
+
+
+class FeedReplyService:
+    """Public replies on feed items. Mirror item_id contract from FeedLikeService."""
+
+    MAX_BODY = 280  # matches the frontend's input maxLength
+
+    def add(self, db: Session, user_id: str, item_id: str, body: str) -> FeedReplyRow:
+        if not db.get(UserRow, user_id):
+            raise ValueError(f"User {user_id} not found")
+        body = (body or "").strip()
+        if not body:
+            raise ValueError("Reply body cannot be empty")
+        if len(body) > self.MAX_BODY:
+            raise ValueError(f"Reply body must be {self.MAX_BODY} chars or less")
+        row = FeedReplyRow(user_id=user_id, item_id=item_id, body=body)
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return row
+
+    def list_for_item(self, db: Session, item_id: str, *, limit: int = 50) -> list[dict]:
+        """Replies on one item, oldest first, with the actor JOINed for display."""
+        stmt = (
+            select(FeedReplyRow, UserRow)
+            .join(UserRow, FeedReplyRow.user_id == UserRow.user_id)
+            .where(FeedReplyRow.item_id == item_id)
+            .order_by(FeedReplyRow.created_at.asc())
+            .limit(limit)
+        )
+        out = []
+        for reply, user in db.execute(stmt):
+            d = reply.to_dict()
+            d["user"] = {
+                "user_id":  user.user_id,
+                "username": user.username,
+                "name":     user.name,
+            }
+            out.append(d)
+        return out
+
+
 class App:
     """Holds the service singletons. They're stateless wrt persistence — all
     state lives in the SQLAlchemy session passed through each call."""
@@ -746,6 +844,9 @@ class App:
         self.saved_service         = SavedMovieService()
         self.review_service        = ReviewService()
         self.notification_service  = NotificationService()
+        self.report_service        = ReportService()
+        self.feed_like_service     = FeedLikeService()
+        self.feed_reply_service    = FeedReplyService()
 
     def delete_account(self, db: Session, user_id: str) -> None:
         """Cascade-delete a user and every row that references them.

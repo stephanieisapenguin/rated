@@ -4,32 +4,69 @@ import { PullIndicator } from "../components/PullIndicator";
 import { ScreenWithNav } from "../components/ScreenWithNav";
 import { TapTarget } from "../components/TapTarget";
 import { useConfirm } from "../components/useConfirm";
+import { API } from "../lib/api";
 import { haptic } from "../lib/haptic";
 import { usePullToRefresh } from "../lib/hooks";
 import { MOCK_NOTIFICATIONS } from "../lib/mockData";
 import { formatRelativeTime, parseRelativeToTs } from "../lib/time";
 import { W } from "../theme";
 
+// Map a backend notification row to the shape this screen renders.
+// Backend types: "follow" | "follow_request" | "review" | "rank"
+// Frontend types: "follow" | "follow_req" | "watchlist" (the existing UI
+// expects these). Other backend events fall through to a generic "follow"
+// renderer to keep the UI from breaking on unknown types.
+const adaptBackend = (row) => {
+  const handle = row.actor?.username ? `@${row.actor.username}` : null;
+  const initial = (row.actor?.username || row.actor?.name || "?")[0]?.toUpperCase() || "?";
+  let type = "follow";
+  let text = row.body || "";
+  if (row.type === "follow") { type = "follow"; text = text || "started following you"; }
+  else if (row.type === "follow_request") { type = "follow_req"; text = text || "requested to follow you"; }
+  else if (row.type === "review") { type = "follow"; text = text || "wrote a review"; }
+  else if (row.type === "rank") { type = "follow"; text = text || "ranked a movie"; }
+  return {
+    id: row.id,
+    type,
+    read: row.read,
+    user: handle,
+    avatar: initial,
+    text,
+    ts: row.created_at ? row.created_at * 1000 : Date.now(),
+    time: "",
+  };
+};
+
 export const NotificationsScreen = ({
-  onNav, isPrivate, onMarkAllRead,
+  onNav, userId, isPrivate, onMarkAllRead,
   blockedUsers = new Set(), toggleFollowHandle, followingHandles = new Set(),
   approveFollower, onSelectUser, rateLimitedFollow,
 }) => {
-  // Hydrate with real timestamps so formatRelativeTime ticks live.
   const [notifications, setNotifications] = useState(() => MOCK_NOTIFICATIONS.map((n) => ({ ...n, ts: parseRelativeToTs(n.time) })));
   const [tab, setTab] = useState("all");
   const { confirm, ConfirmDialog } = useConfirm();
 
-  // Auto-mark all read when screen opens. No-deps effect so it fires once on mount.
-  // onMarkAllRead is captured from initial render — safe when the parent stabilizes
-  // it with useCallback (setUnreadCount is stable).
+  // Fetch from backend on mount + on every pull-to-refresh. Falls back to
+  // the mock seed if the API is unreachable so the screen still demos.
+  const fetchFromBackend = async () => {
+    if (!userId) return;
+    const res = await API.getNotifications(userId);
+    if (res?.items) setNotifications(res.items.map(adaptBackend));
+  };
+
   useEffect(() => {
+    fetchFromBackend();
+    // Mark everything read in one shot — backend writes + local state mirrors.
+    if (userId) API.markAllNotificationsRead(userId).catch(() => { /* best-effort */ });
     setNotifications((p) => p.map((n) => ({ ...n, read: true })));
     onMarkAllRead && onMarkAllRead();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [userId]);
 
-  const markRead = (id) => setNotifications((p) => p.map((n) => (n.id === id ? { ...n, read: true } : n)));
+  const markRead = (id) => {
+    setNotifications((p) => p.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    if (userId) API.markNotificationRead(userId, id).catch(() => { /* swallow */ });
+  };
 
   const approveRequest = (id) => {
     const notif = notifications.find((n) => n.id === id);
@@ -45,7 +82,10 @@ export const NotificationsScreen = ({
         ? `${notif.user} won't be notified, but they can send another request.`
         : "This person will be able to send another follow request.",
       confirmLabel: "Decline",
-      onConfirm: () => setNotifications((p) => p.filter((n) => n.id !== id)),
+      onConfirm: () => {
+        setNotifications((p) => p.filter((n) => n.id !== id));
+        if (userId) API.deleteNotification(userId, id).catch(() => { /* swallow */ });
+      },
     });
   };
 
@@ -57,10 +97,9 @@ export const NotificationsScreen = ({
   const unread = notifications.filter((n) => !n.read).length;
   const pendingRequests = notifications.filter((n) => n.type === "follow_req" && notBlocked(n));
 
-  // Pull-to-refresh refreshes the relative-time labels (no backend yet).
+  // Pull-to-refresh re-fetches from backend.
   const handleRefresh = async () => {
-    setNotifications((p) => p.map((n) => ({ ...n, ts: n.ts || parseRelativeToTs(n.time) })));
-    await new Promise((r) => setTimeout(r, 700));
+    await fetchFromBackend();
   };
   const { pullDist, isRefreshing, pullHandlers } = usePullToRefresh(handleRefresh);
 
