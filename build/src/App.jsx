@@ -721,6 +721,19 @@ function AppInner() {
   const handleSignOut=useCallback(()=>{
     clearLocalAuth();
   },[clearLocalAuth]);
+  // Profile pic update: persist to backend (PATCH /users/{id}) so it
+  // survives across devices and signouts. Local state and localStorage
+  // also update so the UI flips immediately and a reload doesn't flash
+  // empty while the API is in flight.
+  const handleUpdateProfilePic=useCallback((dataUrl)=>{
+    setProfilePic(dataUrl);
+    persistAuth({ profilePic: dataUrl });
+    if (userId && session) {
+      API.updateProfile(userId, { avatar_url: dataUrl }, session).catch(() => {
+        showToast("Couldn't save photo to server — it'll show locally only.", "warn");
+      });
+    }
+  },[userId, session, showToast]);
   // Permanent delete: hit DELETE /users/{id} first so the row really goes
   // away in the database, then run the same local clear. We swallow API
   // errors so a network blip still gets the user logged out locally —
@@ -848,6 +861,7 @@ function AppInner() {
       setUserId(res.user_id);
       const existingUsername = res.user.username || res.username || "";
       const existingDisplayName = res.user.name || "";
+      const existingAvatar = res.user.avatar_url || null;
       if (existingUsername) {
         // Returning user — straight to home.
         setUsername(existingUsername);
@@ -856,6 +870,7 @@ function AppInner() {
       } else {
         setAuthState("choosing-username");
       }
+      if (existingAvatar) setProfilePic(existingAvatar);
       persistAuth({
         provider,
         user_id: res.user_id,
@@ -863,6 +878,7 @@ function AppInner() {
         expires_at: res.expires_at || null,
         username: existingUsername,
         displayName: existingDisplayName,
+        profilePic: existingAvatar,
       });
     } else {
       showToast("Couldn't connect to server. Make sure the backend is running.", "error");
@@ -901,6 +917,7 @@ function AppInner() {
     if (saved.provider) setLoginProvider(saved.provider);
     if (saved.username) setUsername(saved.username);
     if (saved.displayName) setDisplayName(saved.displayName);
+    if (saved.profilePic) setProfilePic(saved.profilePic);
     setAuthState(saved.username ? "logged-in" : "choosing-username");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1009,7 +1026,7 @@ function AppInner() {
     if(screen==="search") return <SearchScreen onNav={onNav} onSelectMovie={onSelectMovie} onSelectUser={onSelectUser} followingHandles={followingHandles} toggleFollowHandle={toggleFollowHandle} rateLimitedFollow={rateLimitedFollow} searchHistory={searchHistory} addSearchHistory={addSearchHistory} clearSearchHistory={clearSearchHistory} removeSearchHistoryItem={removeSearchHistoryItem} username={username} showToast={showToast}/>;
     if(screen==="notifications") return <NotificationsScreen onNav={onNav} isPrivate={isPrivate} onMarkAllRead={()=>setUnreadCount(0)} blockedUsers={blockedUsers} toggleFollowHandle={toggleFollowHandle} followingHandles={followingHandles} approveFollower={approveFollower} onSelectUser={onSelectUser} rateLimitedFollow={rateLimitedFollow}/>;
     if(screen==="profile") return <ProfileScreen onNav={onNav} onSelectMovie={onSelectMovie} rankedIds={rankedIds} eloScores={eloScores} watchlist={watchlist} onSelectUpcoming={onSelectUpcoming} onToggleWatchlist={onToggleWatchlist} username={username} displayName={displayName} userBio={userBio} profilePic={profilePic} isPrivate={isPrivate} onOpenSettings={onOpenSettings} session={session} userId={userId} reportContent={reportContent} rateLimitedFollow={rateLimitedFollow} followingHandles={followingHandles} toggleFollowHandle={toggleFollowHandle} approvedFollowers={approvedFollowers} userReviews={userReviews} onUnrank={handleUnrank} onReorderRanking={handleReorderRanking} onRank={onRank} onReRank={onReRank} savedMovies={savedMovies} toggleSavedMovie={toggleSavedMovie} onEditReview={handleEditReview} onDeleteReview={handleDeleteReview} showToast={showToast} streakInfo={streakInfo}/>;
-    if(screen==="settings") return <SettingsScreen onBack={onBackFromSettings} username={username} displayName={displayName} userBio={userBio} profilePic={profilePic} isPrivate={isPrivate} onUpdateUsername={setUsername} onUpdatePrivacy={setIsPrivate} onUpdateDisplayName={setDisplayName} onUpdateBio={setUserBio} onUpdateProfilePic={setProfilePic} initialSection={settingsSection} blockedUsers={blockedUsers} onUnblock={unblockUser} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} themeMode={themeMode} fontScale={fontScale} onSetThemeMode={setThemeMode} onSetFontScale={setFontScale} lastUsernameChangeTs={lastUsernameChangeTs} onUsernameChanged={()=>setLastUsernameChangeTs(Date.now())} showToast={showToast}/>;
+    if(screen==="settings") return <SettingsScreen onBack={onBackFromSettings} username={username} displayName={displayName} userBio={userBio} profilePic={profilePic} isPrivate={isPrivate} onUpdateUsername={setUsername} onUpdatePrivacy={setIsPrivate} onUpdateDisplayName={setDisplayName} onUpdateBio={setUserBio} onUpdateProfilePic={handleUpdateProfilePic} initialSection={settingsSection} blockedUsers={blockedUsers} onUnblock={unblockUser} onSignOut={handleSignOut} onDeleteAccount={handleDeleteAccount} themeMode={themeMode} fontScale={fontScale} onSetThemeMode={setThemeMode} onSetFontScale={setFontScale} lastUsernameChangeTs={lastUsernameChangeTs} onUsernameChanged={()=>setLastUsernameChangeTs(Date.now())} showToast={showToast}/>;
     if(screen==="rank"&&rankMovie){
       if(rankedIds.includes(rankMovie.id)){
         // Edge case — should rarely trigger since onReRank clears first.

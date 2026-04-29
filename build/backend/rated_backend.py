@@ -83,6 +83,30 @@ class AuthService:
     # ever rotate it or fork the project.
     _DEFAULT_GOOGLE_CLIENT_ID = "830176116158-iu98jg23p45sgetoimbjei6mce4ifofu.apps.googleusercontent.com"
 
+    def update_profile(self, db: Session, user_id: str,
+                       *, name: Optional[str] = None,
+                       avatar_url: Optional[str] = None,
+                       is_private: Optional[bool] = None) -> UserRow:
+        """Patch profile fields. None = leave unchanged. avatar_url accepts
+        either a regular URL or a base64 data URL — storage is the same.
+        Capped at ~256KB to keep row sizes reasonable; clients should
+        downscale before uploading (CropperModal already produces 256x256
+        JPEG, ~30-50KB)."""
+        user = db.get(UserRow, user_id)
+        if not user:
+            raise ValueError(f"User {user_id} not found")
+        if avatar_url is not None:
+            if len(avatar_url) > 256 * 1024:
+                raise ValueError("avatar_url too large — max 256KB")
+            user.avatar_url = avatar_url
+        if name is not None:
+            user.name = name.strip() or user.name
+        if is_private is not None:
+            user.is_private = bool(is_private)
+        db.commit()
+        db.refresh(user)
+        return user
+
     def google_login(self, db: Session, id_token: str) -> UserRow:
         client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip() or self._DEFAULT_GOOGLE_CLIENT_ID
         # Stub format "sub|name|email" is dev-only and currently the only

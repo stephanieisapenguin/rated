@@ -573,6 +573,32 @@ def get_user(user_id: str, db: Session = Depends(get_db)):
     return d
 
 
+class UserUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    is_private: Optional[bool] = None
+
+
+@app.patch("/users/{user_id}", tags=["Users"])
+def update_user(
+    user_id: str,
+    body: UserUpdateRequest,
+    _: UserRow = Depends(require_self),
+    db: Session = Depends(get_db),
+):
+    """Patch profile fields. Only the user themselves can edit their row."""
+    try:
+        user = app_instance.auth.update_profile(
+            db, user_id,
+            name=body.name,
+            avatar_url=body.avatar_url,
+            is_private=body.is_private,
+        )
+        return user.to_dict()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.delete("/users/{user_id}", tags=["Users"])
 def delete_account(
     user_id: str,

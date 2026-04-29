@@ -58,6 +58,7 @@ export const API = {
   movieStats:        (movie_id)                      => api("GET",  `/movies/${movie_id}/stats`),
   searchUsers:       (q, limit = 20)                 => api("GET",  `/users?q=${encodeURIComponent(q)}&limit=${limit}`),
   deleteAccount:     (uid, token)                    => api("DELETE", `/users/${uid}`, null, token),
+  updateProfile:     (uid, fields, token)            => api("PATCH",  `/users/${uid}`, fields, token),
 };
 
 // Login variant that surfaces backend error details — the bare `api` wrapper
