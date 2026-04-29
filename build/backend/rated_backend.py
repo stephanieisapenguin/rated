@@ -76,8 +76,15 @@ class AuthService:
     development and tests don't need a Google client set up.
     """
 
+    # Default Google OAuth client ID. Public by design (it ships in the
+    # frontend bundle), so embedding it here is safe and means the backend
+    # keeps verifying real JWTs even when Replit's env-var store clears
+    # itself between deploys. Override via GOOGLE_CLIENT_ID env var if you
+    # ever rotate it or fork the project.
+    _DEFAULT_GOOGLE_CLIENT_ID = "830176116158-iu98jg23p45sgetoimbjei6mce4ifofu.apps.googleusercontent.com"
+
     def google_login(self, db: Session, id_token: str) -> UserRow:
-        client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+        client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip() or self._DEFAULT_GOOGLE_CLIENT_ID
         # Real Google JWTs are dot-separated base64 segments and never contain
         # a pipe character. The stub format "sub|name|email" is dev-only — and
         # also currently the only thing the Apple button sends until we ship
