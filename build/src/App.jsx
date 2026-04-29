@@ -72,6 +72,13 @@ import { FOLLOW_LIMIT_PER_HOUR, FOLLOW_WINDOW_MS } from "./lib/moderation";
 import { checkProfanity } from "./lib/profanity";
 import { TAKEN_USERNAMES } from "./lib/usernames";
 import { API, API_BASE } from "./lib/api";
+import { googleClientConfigured, promptGoogleSignIn } from "./lib/googleSignin";
+
+// Persisted session lives in this localStorage key. Wiped on logout. Includes
+// the session_token so subsequent app boots skip the login screen, plus the
+// profile fields that Username/Profile screens render — without them a reload
+// briefly flashes empty headers before any backend round-trip lands.
+const AUTH_STORAGE_KEY = "rated:auth";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // API LAYER
@@ -678,6 +685,7 @@ function AppInner() {
   const handleDeleteAccount=useCallback(()=>{
     // In production: call DELETE /users/me API here.
     // Then wipe all local state and return to logged-out.
+    if (typeof localStorage !== "undefined") localStorage.removeItem(AUTH_STORAGE_KEY);
     setAuthState("logged-out");
     setLoginProvider(null);
     setSession(null);
@@ -789,28 +797,94 @@ function AppInner() {
 
   const handleLogin=async(provider)=>{
     setLoginProvider(provider);
-    // Stub login token — format: "sub|name|email" matches backend's AuthService.google_login.
-    // Each provider gets a distinct sub so they're treated as different users in the backend.
-    const stub = provider==="apple"
-      ? "sub_apple_demo|Apple User|user@icloud.com"
-      : "sub_google_demo|Google User|user@gmail.com";
-    const res = await API.login(stub);
+    // Build the id_token. For Google we use Google Identity Services if a
+    // client ID is configured (real JWT). Otherwise — and always for Apple
+    // until we ship Sign-in-with-Apple — fall back to the dev stub format
+    // that the backend's AuthService accepts when GOOGLE_CLIENT_ID is unset.
+    let idToken;
+    if (provider === "google" && googleClientConfigured()) {
+      try {
+        idToken = await promptGoogleSignIn();
+      } catch (e) {
+        showToast(e?.message || "Google sign-in cancelled", "error");
+        return;
+      }
+    } else {
+      // Stub format: "sub|name|email". Each provider gets a distinct sub so
+      // backend treats them as different users.
+      idToken = provider === "apple"
+        ? "sub_apple_demo|Apple User|user@icloud.com"
+        : "sub_google_demo|Google User|user@gmail.com";
+    }
+    const res = await API.login(idToken);
     if (res && res.user) {
-      // Backend created/found a user. Save session + user_id for all future API calls.
+      // Save session + user_id; persist them so reloads skip login.
       setSession(res.session_token);
       setUserId(res.user_id);
-      // For now always go to username chooser. Later we'll skip if user already has one.
-      setAuthState("choosing-username");
+      const existingUsername = res.user.username || res.username || "";
+      const existingDisplayName = res.user.name || "";
+      if (existingUsername) {
+        // Returning user — straight to home.
+        setUsername(existingUsername);
+        if (existingDisplayName) setDisplayName(existingDisplayName);
+        setAuthState("logged-in");
+      } else {
+        setAuthState("choosing-username");
+      }
+      persistAuth({
+        provider,
+        user_id: res.user_id,
+        session_token: res.session_token,
+        expires_at: res.expires_at || null,
+        username: existingUsername,
+        displayName: existingDisplayName,
+      });
     } else {
-      // Backend unreachable or returned an error. Show a toast so user knows.
       showToast("Couldn't connect to server. Make sure the backend is running.", "error");
     }
   };
+
+  // localStorage helpers — keep them inside AppInner so they close over the
+  // current setters and can be called from logout/restore code paths below.
+  const persistAuth = (extra = {}) => {
+    if (typeof localStorage === "undefined") return;
+    const existing = (() => {
+      try { return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || "{}"); } catch (e) { return {}; }
+    })();
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ ...existing, ...extra }));
+  };
+  const clearPersistedAuth = () => {
+    if (typeof localStorage === "undefined") return;
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+  };
+
+  // On first mount, restore a stored session if one exists and isn't expired.
+  // We trust the cached profile fields — the next API call will 401 if the
+  // token's actually been revoked, and the global error handler can route
+  // back to logged-out from there.
+  useEffect(() => {
+    if (typeof localStorage === "undefined") return;
+    let saved;
+    try { saved = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || "null"); } catch (e) { saved = null; }
+    if (!saved?.session_token || !saved?.user_id) return;
+    if (saved.expires_at && saved.expires_at * 1000 < Date.now()) {
+      clearPersistedAuth();
+      return;
+    }
+    setSession(saved.session_token);
+    setUserId(saved.user_id);
+    if (saved.provider) setLoginProvider(saved.provider);
+    if (saved.username) setUsername(saved.username);
+    if (saved.displayName) setDisplayName(saved.displayName);
+    setAuthState(saved.username ? "logged-in" : "choosing-username");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleUsernameComplete=(u, name)=>{
     setUsername(u);
     if(name)setDisplayName(name);
     setAuthState("logged-in");
+    persistAuth({ username: u, ...(name ? { displayName: name } : {}) });
     // First-run tutorial: only fresh accounts (no rankings yet) and only if
     // they haven't already finished/skipped onboarding in a prior session.
     if (!onboardingDone && rankedIds.length===0) {
@@ -938,7 +1012,7 @@ function AppInner() {
           ?Object.entries({home:"Home",upcoming:"Upcoming",search:"Search",leaderboard:"Board",profile:"Profile"}).map(([k,v])=>(
               <button key={k} onClick={()=>onNav(k)} style={{padding:"5px 11px",borderRadius:8,fontSize:9,fontFamily:"monospace",fontWeight:700,cursor:"pointer",border:`1px solid ${activeNav()===k?W.accent:W.border}`,background:activeNav()===k?W.accentDim:"transparent",color:activeNav()===k?W.accent:W.dim}}>{v}</button>
             ))
-          :<button onClick={()=>setAuthState("logged-out")} style={{padding:"5px 11px",borderRadius:8,fontSize:9,fontFamily:"monospace",fontWeight:700,cursor:"pointer",border:`1px solid ${W.accent}`,background:W.accentDim,color:W.accent}}>← Login</button>
+          :<button onClick={()=>{if(typeof localStorage!=="undefined")localStorage.removeItem(AUTH_STORAGE_KEY);setAuthState("logged-out");setSession(null);setUserId(null);setUsername("");}} style={{padding:"5px 11px",borderRadius:8,fontSize:9,fontFamily:"monospace",fontWeight:700,cursor:"pointer",border:`1px solid ${W.accent}`,background:W.accentDim,color:W.accent}}>← Login</button>
         }
       </div>
       <div style={{display:"flex",justifyContent:"center"}}>
