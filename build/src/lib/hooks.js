@@ -79,7 +79,7 @@ export const useFocusTrap = (containerRef, isOpen, onClose) => {
     return () => {
       container.removeEventListener("keydown", onKey);
       if (prevActive && typeof prevActive.focus === "function") {
-        try { prevActive.focus(); } catch (e) { /* element gone */ }
+        try { prevActive.focus(); } catch { /* element gone */ }
       }
     };
   }, [isOpen, containerRef, onClose]);
@@ -120,7 +120,7 @@ export const usePullToRefresh = (onRefresh) => {
     if (pullDist >= 60 && !isRefreshing) {
       setIsRefreshing(true);
       haptic("heavy");
-      try { await onRefresh?.(); } catch (e) { /* surface elsewhere */ }
+      try { await onRefresh?.(); } catch { /* surface elsewhere */ }
       setTimeout(() => { setIsRefreshing(false); setPullDist(0); }, 600);
     } else {
       setPullDist(0);
@@ -190,7 +190,7 @@ export const useShareInvite = (username, showToast) => {
         showToast && showToast("Invite link copied to clipboard", "ok");
         return true;
       }
-    } catch (e) { /* clipboard unavailable */ }
+    } catch { /* clipboard unavailable */ }
     showToast && showToast("Couldn't share — your browser doesn't support this", "err");
     return false;
   }, [inviteUrl, inviteMsg, showToast]);

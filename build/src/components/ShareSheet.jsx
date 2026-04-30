@@ -30,7 +30,7 @@ export const ShareSheet = ({ item, onClose, showToast }) => {
       } else {
         showToast && showToast("Couldn't copy — clipboard unavailable", "err");
       }
-    } catch (e) {
+    } catch {
       showToast && showToast("Couldn't copy — clipboard unavailable", "err");
     }
     onClose();
@@ -49,7 +49,7 @@ export const ShareSheet = ({ item, onClose, showToast }) => {
         await navigator.clipboard.writeText(link);
         showToast && showToast("Link copied", "ok");
       }
-    } catch (e) { /* clipboard unavailable */ }
+    } catch { /* clipboard unavailable */ }
     onClose();
   };
   const sendSms = () => {

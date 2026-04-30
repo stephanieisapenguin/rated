@@ -1003,3 +1003,137 @@ def test_persistence_across_restart(tmp_path, monkeypatch):
         assert len(rankings) == 1
         assert rankings[0]["movie"]["movie_id"] == "m-005"
         assert rankings[0]["score"] == 7
+
+
+# ─── Account deletion ───────────────────────────────────────────────────────
+
+def test_delete_account_removes_user_and_their_rows(client):
+    user_id, hdrs = _authed_login(client, sub="sub_delete_me", name="Doomed", email="d@x.com")
+    # Leave breadcrumbs across tables so we can confirm the cascade.
+    client.post(f"/users/{user_id}/rankings", json={"movie_id": "m-001", "score": 8}, headers=hdrs)
+    client.post(f"/users/{user_id}/saved",    json={"movie_id": "m-002"},             headers=hdrs)
+    client.post(f"/users/{user_id}/reviews",  json={"movie_id": "m-003", "rating": 7, "text": "ok"}, headers=hdrs)
+
+    r = client.delete(f"/users/{user_id}", headers=hdrs)
+    assert r.status_code == 200, r.text
+
+    # User row gone, plus everything that referenced them.
+    assert client.get(f"/users/{user_id}").status_code == 404
+    assert client.get(f"/users/{user_id}/rankings").json() == []
+    assert client.get(f"/users/{user_id}/saved").json()    == []
+    assert client.get(f"/users/{user_id}/reviews").json()  == []
+
+
+def test_delete_account_requires_self(client):
+    a_id, a_hdrs = _authed_login(client, sub="sub_a_del", name="A", email="a@x.com")
+    _b_id, b_hdrs = _authed_login(client, sub="sub_b_del", name="B", email="b@x.com")
+    # B can't delete A.
+    r = client.delete(f"/users/{a_id}", headers=b_hdrs)
+    assert r.status_code in (401, 403)
+
+
+# ─── Profile update ──────────────────────────────────────────────────────────
+
+def test_profile_update_round_trip(client):
+    user_id, hdrs = _authed_login(client, sub="sub_profile", name="Old", email="p@x.com")
+    body = {"name": "Newer", "avatar_url": "data:image/jpeg;base64,xxx", "is_private": True}
+    r = client.patch(f"/users/{user_id}", json=body, headers=hdrs)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["name"] == "Newer"
+    assert out["avatar_url"] == "data:image/jpeg;base64,xxx"
+    assert out["is_private"] is True
+
+
+def test_profile_update_avatar_size_capped(client):
+    user_id, hdrs = _authed_login(client, sub="sub_huge_avatar", name="Big", email="b@x.com")
+    huge = "x" * (260 * 1024)  # >256KB cap
+    r = client.patch(f"/users/{user_id}", json={"avatar_url": huge}, headers=hdrs)
+    assert r.status_code == 400
+    assert "256KB" in r.json()["detail"]
+
+
+def test_profile_update_requires_self(client):
+    a_id, _   = _authed_login(client, sub="sub_p_a", name="A", email="a@x.com")
+    _,    h_b = _authed_login(client, sub="sub_p_b", name="B", email="b@x.com")
+    r = client.patch(f"/users/{a_id}", json={"name": "Hijacked"}, headers=h_b)
+    assert r.status_code in (401, 403)
+
+
+# ─── Reports ────────────────────────────────────────────────────────────────
+
+def test_submit_report_persists(client):
+    user_id, hdrs = _authed_login(client, sub="sub_reporter", name="R", email="r@x.com")
+    payload = {
+        "target_type": "feed",
+        "target_id":   "f-001",
+        "target_label": "@maya - Whiplash",
+        "reason_key":  "spam",
+        "reason_label": "Spam",
+    }
+    r = client.post(f"/users/{user_id}/reports", json=payload, headers=hdrs)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["reporter_id"] == user_id
+    assert out["target_type"] == "feed"
+    assert out["reason_key"]  == "spam"
+
+
+def test_submit_report_requires_auth(client):
+    user_id, _ = _authed_login(client, sub="sub_rep_noauth", name="R", email="r@x.com")
+    r = client.post(f"/users/{user_id}/reports", json={
+        "target_type": "feed", "target_id": "f-001", "reason_key": "spam",
+    })
+    assert r.status_code == 401
+
+
+# ─── Feed likes ─────────────────────────────────────────────────────────────
+
+def test_feed_like_toggle_round_trip(client):
+    user_id, hdrs = _authed_login(client, sub="sub_liker", name="L", email="l@x.com")
+
+    # First press: now liked.
+    r1 = client.post(f"/users/{user_id}/feed-likes/f-001", headers=hdrs)
+    assert r1.status_code == 200
+    assert r1.json() == {"item_id": "f-001", "liked": True}
+
+    # Re-fetch the user's likes.
+    r_get = client.get(f"/users/{user_id}/feed-likes")
+    assert r_get.status_code == 200
+    assert r_get.json() == {"item_ids": ["f-001"]}
+
+    # Second press: unliked.
+    r2 = client.post(f"/users/{user_id}/feed-likes/f-001", headers=hdrs)
+    assert r2.json()["liked"] is False
+    assert client.get(f"/users/{user_id}/feed-likes").json()["item_ids"] == []
+
+
+# ─── Feed replies ───────────────────────────────────────────────────────────
+
+def test_feed_reply_post_and_list(client):
+    a_id, a_hdrs = _authed_login(client, sub="sub_reply_a", name="Alice", email="a@x.com")
+    b_id, b_hdrs = _authed_login(client, sub="sub_reply_b", name="Bob",   email="b@x.com")
+    client.post(f"/users/{a_id}/feed-replies/f-001", json={"body": "first"},  headers=a_hdrs)
+    client.post(f"/users/{b_id}/feed-replies/f-001", json={"body": "second"}, headers=b_hdrs)
+
+    out = client.get("/feed-items/f-001/replies").json()["replies"]
+    assert len(out) == 2
+    assert [r["body"] for r in out] == ["first", "second"]
+    assert out[0]["user"]["name"] == "Alice"
+
+
+def test_feed_reply_body_validation(client):
+    user_id, hdrs = _authed_login(client, sub="sub_reply_v", name="V", email="v@x.com")
+    # Empty body rejected.
+    r1 = client.post(f"/users/{user_id}/feed-replies/f-x", json={"body": ""}, headers=hdrs)
+    assert r1.status_code == 400
+    # Over-cap body rejected.
+    r2 = client.post(f"/users/{user_id}/feed-replies/f-x", json={"body": "x" * 281}, headers=hdrs)
+    assert r2.status_code == 400
+
+
+def test_feed_reply_post_requires_self(client):
+    a_id, _    = _authed_login(client, sub="sub_rep_self_a", name="A", email="a@x.com")
+    _,    b_h  = _authed_login(client, sub="sub_rep_self_b", name="B", email="b@x.com")
+    r = client.post(f"/users/{a_id}/feed-replies/f-x", json={"body": "hey"}, headers=b_h)
+    assert r.status_code in (401, 403)

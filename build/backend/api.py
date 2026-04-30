@@ -20,6 +20,7 @@ to wipe back to seeded fixtures.
 import os
 import time
 import uuid
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import structlog
@@ -67,7 +68,25 @@ TAGS = [
 
 # ─── App init ─────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Rated API", version="0.1.0", openapi_tags=TAGS)
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Startup-then-shutdown hook. Init schema + seed fixtures on boot;
+    nothing to do on shutdown beyond what the worker already cleans up.
+    Replaces the deprecated @app.on_event("startup") pattern."""
+    init_db()
+    db = SessionLocal()
+    try:
+        if db.execute(select(func.count()).select_from(MovieRow)).scalar() == 0:
+            _seed_initial(db)
+            print("[seed] inserted fixture movies + 8 mock users + rankings")
+        else:
+            print("[startup] DB has data — skipping seed")
+    finally:
+        db.close()
+    yield
+
+
+app = FastAPI(title="Rated API", version="0.1.0", openapi_tags=TAGS, lifespan=lifespan)
 
 # CORS — read allowlist from env. ALLOWED_ORIGINS in prod is a comma-separated
 # list of frontend URLs (e.g. "https://silver-salamander-08daf4.netlify.app").
@@ -195,21 +214,8 @@ def require_self(
     return user
 
 
-# ─── Schema + seeding (run once on startup) ───────────────────────────────────
-
-@app.on_event("startup")
-def _startup() -> None:
-    init_db()
-    db = SessionLocal()
-    try:
-        if db.execute(select(func.count()).select_from(MovieRow)).scalar() == 0:
-            _seed_initial(db)
-            print("[seed] inserted fixture movies + 8 mock users + rankings")
-        else:
-            print(f"[startup] DB has data — skipping seed")
-    finally:
-        db.close()
-
+# ─── Initial seed ─────────────────────────────────────────────────────────────
+# Schema init + seed runs from the lifespan handler above on app startup.
 
 def _seed_initial(db: Session) -> None:
     app_instance.seed_movies(db, [

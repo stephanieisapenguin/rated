@@ -6,6 +6,6 @@
 export const haptic = (intensity = "light") => {
   if (typeof navigator !== "undefined" && navigator.vibrate) {
     const dur = intensity === "heavy" ? 20 : intensity === "medium" ? 12 : 6;
-    try { navigator.vibrate(dur); } catch (e) { /* swallow */ }
+    try { navigator.vibrate(dur); } catch { /* swallow */ }
   }
 };

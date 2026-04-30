@@ -2,6 +2,7 @@
 // running tests, tears them down after. Single browser (Chromium headless)
 // — adding firefox/webkit later is one entry in `projects`.
 
+/* global process */
 import { defineConfig, devices } from "@playwright/test";
 
 const FRONTEND_PORT = 5173;

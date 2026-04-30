@@ -29,7 +29,7 @@ export const DraggableList = ({ items, keyOf, renderItem, onReorder, disabled = 
     const row = rowRefs.current[keyOf(item)];
     if (!row) return;
     const rect = row.getBoundingClientRect();
-    try { e.target.setPointerCapture && e.target.setPointerCapture(e.pointerId); } catch (_) { /* unsupported */ }
+    try { e.target.setPointerCapture && e.target.setPointerCapture(e.pointerId); } catch { /* unsupported */ }
     // Pre-measure row offsets so move events can compute hover index from a
     // single pointer Y without re-querying the DOM each move.
     const containerTop = containerRef.current?.getBoundingClientRect().top || 0;

@@ -3,6 +3,28 @@ import { useState } from "react";
 import { Toggle } from "../components/Toggle";
 import { W } from "../theme";
 
+// Hoisted out of the screen body so React doesn't see them as freshly-defined
+// component types on every render — that breaks reconciliation and triggers
+// the "Cannot create components during render" lint rule.
+const Row = ({ label, sub, on, onToggle }) => (
+  <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderBottom: `1px solid ${W.border}` }}>
+    <div style={{ flex: 1 }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: W.text, fontFamily: "monospace" }}>{label}</div>
+      {sub && <div style={{ fontSize: 9, color: W.dim, fontFamily: "monospace", marginTop: 2 }}>{sub}</div>}
+    </div>
+    <Toggle on={on} onToggle={onToggle}/>
+  </div>
+);
+
+const Section = ({ title, children }) => (
+  <div style={{ marginBottom: 16 }}>
+    <div style={{ fontSize: 9, fontWeight: 700, color: W.dim, fontFamily: "monospace", letterSpacing: 1, marginBottom: 6, paddingLeft: 2 }}>{title}</div>
+    <div style={{ background: W.card, border: `1px solid ${W.border}`, borderRadius: 14, overflow: "hidden" }}>
+      {children}
+    </div>
+  </div>
+);
+
 // Notification preferences. Three sections — push (in-app), email, and
 // activity-derived alerts. State is local: persistence belongs to the parent
 // SettingsScreen → backend pipeline once that wires up.
@@ -17,25 +39,6 @@ export const NotificationSettings = () => {
   const [activity, setActivity] = useState({
     likes: true, replies: true, rankings_milestone: true, streak_at_risk: true,
   });
-
-  const Row = ({ label, sub, on, onToggle }) => (
-    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderBottom: `1px solid ${W.border}` }}>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: W.text, fontFamily: "monospace" }}>{label}</div>
-        {sub && <div style={{ fontSize: 9, color: W.dim, fontFamily: "monospace", marginTop: 2 }}>{sub}</div>}
-      </div>
-      <Toggle on={on} onToggle={onToggle}/>
-    </div>
-  );
-
-  const Section = ({ title, children }) => (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 9, fontWeight: 700, color: W.dim, fontFamily: "monospace", letterSpacing: 1, marginBottom: 6, paddingLeft: 2 }}>{title}</div>
-      <div style={{ background: W.card, border: `1px solid ${W.border}`, borderRadius: 14, overflow: "hidden" }}>
-        {children}
-      </div>
-    </div>
-  );
 
   return (
     <div>

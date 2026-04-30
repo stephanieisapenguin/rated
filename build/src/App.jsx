@@ -5,7 +5,6 @@ import { AlreadyRankedFallback } from "./screens/AlreadyRankedFallback";
 import { UsernameScreen } from "./screens/UsernameScreen";
 import { UpcomingScreen } from "./screens/UpcomingScreen";
 import { NotificationsScreen } from "./screens/NotificationsScreen";
-import { ReviewModal } from "./screens/ReviewModal";
 import { MovieDetailScreen } from "./screens/MovieDetailScreen";
 import { LeaderboardScreen } from "./screens/LeaderboardScreen";
 import { UserProfileScreen } from "./screens/UserProfileScreen";
@@ -15,63 +14,14 @@ import { ProfileScreen } from "./screens/ProfileScreen";
 import { RankScreen } from "./screens/RankScreen";
 import { OnboardingRank } from "./screens/OnboardingRank";
 import { SettingsScreen } from "./screens/SettingsScreen";
-import { NotificationSettings } from "./screens/NotificationSettings";
-import { Toggle } from "./components/Toggle";
-import { TapTarget } from "./components/TapTarget";
-import { Poster } from "./components/Poster";
-import { PullIndicator } from "./components/PullIndicator";
-import { ScreenWithNav } from "./components/ScreenWithNav";
-import { useConfirm } from "./components/useConfirm";
-import { Badge } from "./components/Badge";
-import { Btn } from "./components/Btn";
-import { ShareIcon } from "./components/ShareIcon";
-import { Skeleton, FeedSkeleton } from "./components/Skeleton";
-import { CropperModal } from "./components/CropperModal";
-import { ImageViewer } from "./components/ImageViewer";
-import { ShareSheet } from "./components/ShareSheet";
-import { TrailerModal } from "./components/TrailerModal";
-import { DraggableList } from "./components/DraggableList";
-import { SwipeableRow } from "./components/SwipeableRow";
-import { ReportBlockMenu } from "./components/ReportBlockMenu";
 import { haptic } from "./lib/haptic";
-import {
-  useEdgeSwipeBack,
-  useFocusTrap,
-  useKeyboardAvoidance,
-  useMinuteTick,
-  useOnlineStatus,
-  usePullToRefresh,
-  useShareInvite,
-} from "./lib/hooks";
-import {
-  ALL_GENRES,
-  GLOBAL_FEED,
-  MOCK_FEED,
-  MOCK_FRIENDS,
-  MOVIES,
-  UPCOMING,
-  USER_PROFILES,
-} from "./lib/mockData";
-import {
-  daysUntil,
-  formatRelativeTime,
-  formatReleaseDate,
-  parseRelativeToTs,
-} from "./lib/time";
-import {
-  TMDB_ENABLED,
-  findMovieSync,
-  tmdbMovieDetail,
-  tmdbPopular,
-  tmdbSearch,
-  tmdbTopRated,
-} from "./lib/tmdb";
-import { calcElo } from "./lib/elo";
+import { useKeyboardAvoidance, useMinuteTick, useOnlineStatus } from "./lib/hooks";
+import { MOCK_FRIENDS } from "./lib/mockData";
+import { findMovieSync } from "./lib/tmdb";
 import { computeStreak } from "./lib/streak";
 import { FOLLOW_LIMIT_PER_HOUR, FOLLOW_WINDOW_MS } from "./lib/moderation";
-import { checkProfanity } from "./lib/profanity";
 import { TAKEN_USERNAMES } from "./lib/usernames";
-import { API, API_BASE, loginRaw } from "./lib/api";
+import { API, loginRaw } from "./lib/api";
 import { googleClientConfigured, promptGoogleSignIn } from "./lib/googleSignin";
 
 // Persisted session lives in this localStorage key. Wiped on logout. Includes
@@ -392,7 +342,7 @@ function AppInner() {
       const parsed = JSON.parse(raw);
       // Sanity check — must be an array of {movieId, ts}
       return Array.isArray(parsed) ? parsed.filter(e => e && typeof e.ts === "number") : [];
-    } catch(_) { return []; }
+    } catch { return []; }
   });
   // Persist rank history whenever it changes
   useEffect(() => {
@@ -400,7 +350,7 @@ function AppInner() {
       if (typeof localStorage !== "undefined") {
         localStorage.setItem("rated:rankHistory", JSON.stringify(rankHistory));
       }
-    } catch(_) {}
+    } catch { /* localStorage full or disabled — degrade silently */ }
   }, [rankHistory]);
   // Compute streak on every render — cheap, pure function of rankHistory
   const streakInfo = computeStreak(rankHistory);
@@ -512,7 +462,6 @@ function AppInner() {
   const [blockedUsers,setBlockedUsers]=useState(new Set()); // Set of @handles
   // Local-only record of reports submitted by this user. Wire up to a real
   // /reports endpoint when moderation backend lands.
-  const [reportedItems,setReportedItems]=useState([]);
   // Users whose follow requests you've approved — they follow you (boosts your followers count)
   const [approvedFollowers,setApprovedFollowers]=useState(new Set());
   const approveFollower=useCallback((handle)=>{
@@ -569,7 +518,6 @@ function AppInner() {
     showToast(`Unblocked ${handle}`,"ok");
   },[showToast]);
   const reportContent=useCallback((type,targetId,targetLabel,reason)=>{
-    setReportedItems(p=>[...p,{type,targetId,targetLabel,reason,time:Date.now()}]);
     if (userId && session) {
       API.submitReport(userId, {
         target_type:  type,
@@ -733,7 +681,6 @@ function AppInner() {
     setFollowingHandles(new Set());
     setBlockedUsers(new Set());
     setApprovedFollowers(new Set());
-    setReportedItems([]);
     setFollowTimestamps([]);
     setLastUsernameChangeTs(null);
     setUnreadCount(0);
@@ -766,7 +713,7 @@ function AppInner() {
   // they can retry the delete after re-authing.
   const handleDeleteAccount=useCallback(async()=>{
     if (userId && session) {
-      try { await API.deleteAccount(userId, session); } catch (e) { /* swallow */ }
+      try { await API.deleteAccount(userId, session); } catch { /* swallow */ }
     }
     clearLocalAuth();
   },[userId, session, clearLocalAuth]);
@@ -916,7 +863,7 @@ function AppInner() {
   const persistAuth = (extra = {}) => {
     if (typeof localStorage === "undefined") return;
     const existing = (() => {
-      try { return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || "{}"); } catch (e) { return {}; }
+      try { return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || "{}"); } catch { return {}; }
     })();
     localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ ...existing, ...extra }));
   };
@@ -932,7 +879,7 @@ function AppInner() {
   useEffect(() => {
     if (typeof localStorage === "undefined") return;
     let saved;
-    try { saved = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || "null"); } catch (e) { saved = null; }
+    try { saved = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || "null"); } catch { saved = null; }
     if (!saved?.session_token || !saved?.user_id) return;
     if (saved.expires_at && saved.expires_at * 1000 < Date.now()) {
       clearPersistedAuth();

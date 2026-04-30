@@ -45,7 +45,7 @@ export const CropperModal = ({ src, onSave, onCancel }) => {
   const dragRef = useRef(null);
   const onPointerDown = (e) => {
     e.preventDefault();
-    try { e.target.setPointerCapture && e.target.setPointerCapture(e.pointerId); } catch (_) { /* unsupported */ }
+    try { e.target.setPointerCapture && e.target.setPointerCapture(e.pointerId); } catch { /* unsupported */ }
     dragRef.current = { startX: e.clientX, startY: e.clientY, startOffset: { ...offset } };
   };
   const onPointerMove = (e) => {
