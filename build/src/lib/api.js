@@ -6,8 +6,10 @@
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
-const _AUTH = "scope=%2Fv0&exp=0&sig=de23ecee33cf1f1984806f7a60398f0395e89d73567dd6ab5667e635b6b5e559";
-const _url = (path) => `${API_BASE}${path}${path.includes("?") ? "&" : "?"}${_AUTH}`;
+const _AUTH = import.meta.env.VITE_API_AUTH || "";
+const _url = (path) => _AUTH
+  ? `${API_BASE}${path}${path.includes("?") ? "&" : "?"}${_AUTH}`
+  : `${API_BASE}${path}`;
 
 async function api(method, path, body) {
   try {
