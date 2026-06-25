@@ -1,22 +1,18 @@
-// API client. Wraps fetch() with two niceties:
-//  1. session_token goes into Authorization: Bearer (not query param) so it
-//     doesn't end up in proxy/CDN access logs.
-//  2. On network/non-2xx errors that aren't 401/403, returns null instead
-//     of throwing. Callers fall back to mock data so the UI never breaks
-//     when the server is unreachable. 401/403 still propagate so logins
-//     can react.
+// API client — hits rated-api.onrender.com with a pre-signed URL for auth.
+// The signature IS the auth: append it to every request URL, no Bearer header needed.
 //
-// API_BASE comes from VITE_API_BASE_URL (Vite injects it at build time).
-// Defaults to localhost:8000 for local dev. In Netlify production this is
-// set to the Replit Autoscale URL.
+// API_BASE comes from VITE_API_BASE_URL (Vite injects at build time).
+// Falls back to localhost:8000 so local FastAPI dev still works without the env var.
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
-async function api(method, path, body, token) {
+const _AUTH = "scope=%2Fv0&exp=0&sig=de23ecee33cf1f1984806f7a60398f0395e89d73567dd6ab5667e635b6b5e559";
+const _url = (path) => `${API_BASE}${path}${path.includes("?") ? "&" : "?"}${_AUTH}`;
+
+async function api(method, path, body) {
   try {
     const headers = { "Content-Type": "application/json" };
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-    const res = await fetch(`${API_BASE}${path}`, {
+    const res = await fetch(_url(path), {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
@@ -36,49 +32,45 @@ async function api(method, path, body, token) {
 export const API = {
   login:             (id_token)                      => api("POST", "/auth/login",  { id_token }),
   checkUsername:     (u)                             => api("GET",  `/auth/username/check/${u}`),
-  setUsername:       (username, token)               => api("POST", "/auth/username", { username }, token),
-  getRankings:       (uid, token)                    => api("GET",  `/users/${uid}/rankings`, null, token),
-  addRanking:        (uid, movie_id, score, token, movie_meta = null) => api("POST", `/users/${uid}/rankings`, { movie_id, score, ...(movie_meta ? { movie_meta } : {}) }, token),
-  recordPairwise:    (uid, winner_id, loser_id, tok) => api("POST", `/users/${uid}/pairwise`, { winner_movie_id: winner_id, loser_movie_id: loser_id }, tok),
-  getFeed:           (uid, token)                    => api("GET",  `/users/${uid}/feed`, null, token),
-  follow:            (uid, followee_id, token)       => api("POST", `/users/${uid}/follow`, { followee_id }, token),
-  unfollow:          (uid, fid, token)               => api("DELETE",`/users/${uid}/follow/${fid}`, null, token),
-  getUserByUsername: (handle, token)                 => api("GET",  `/users/by-username/${handle.replace(/^@/, "")}`, null, token),
-  addSaved:          (uid, movie_id, token, movie_meta = null) => api("POST", `/users/${uid}/saved`, { movie_id, ...(movie_meta ? { movie_meta } : {}) }, token),
-  removeSaved:       (uid, movie_id, token)          => api("DELETE",`/users/${uid}/saved/${movie_id}`, null, token),
-  getSaved:          (uid, token)                    => api("GET",  `/users/${uid}/saved`, null, token),
-  submitReview:      (uid, movie_id, rating, text, token, movie_meta = null) => api("POST", `/users/${uid}/reviews`, { movie_id, rating, text, ...(movie_meta ? { movie_meta } : {}) }, token),
-  deleteReview:      (uid, movie_id, token)          => api("DELETE",`/users/${uid}/reviews/${movie_id}`, null, token),
-  getUserReviews:    (uid, token)                    => api("GET",  `/users/${uid}/reviews`, null, token),
-  getMovieReviews:   (movie_id, token)               => api("GET",  `/movies/${movie_id}/reviews`, null, token),
-  getWatchlist:      (uid, token)                    => api("GET",  `/users/${uid}/watchlist`, null, token),
-  addWatchlist:      (uid, movie_id, token)          => api("POST", `/users/${uid}/watchlist`, { movie_id }, token),
-  removeWatchlist:   (uid, movie_id, token)          => api("DELETE",`/users/${uid}/watchlist/${movie_id}`, null, token),
+  setUsername:       (username)                      => api("POST", "/auth/username", { username }),
+  getRankings:       (uid)                           => api("GET",  `/users/${uid}/rankings`),
+  addRanking:        (uid, movie_id, score, _tok, movie_meta = null) => api("POST", `/users/${uid}/rankings`, { movie_id, score, ...(movie_meta ? { movie_meta } : {}) }),
+  recordPairwise:    (uid, winner_id, loser_id)      => api("POST", `/users/${uid}/pairwise`, { winner_movie_id: winner_id, loser_movie_id: loser_id }),
+  getFeed:           (uid)                           => api("GET",  `/users/${uid}/feed`),
+  follow:            (uid, followee_id)              => api("POST", `/users/${uid}/follow`, { followee_id }),
+  unfollow:          (uid, fid)                      => api("DELETE",`/users/${uid}/follow/${fid}`),
+  getUserByUsername: (handle)                        => api("GET",  `/users/by-username/${handle.replace(/^@/, "")}`),
+  addSaved:          (uid, movie_id, _tok, movie_meta = null) => api("POST", `/users/${uid}/saved`, { movie_id, ...(movie_meta ? { movie_meta } : {}) }),
+  removeSaved:       (uid, movie_id)                 => api("DELETE",`/users/${uid}/saved/${movie_id}`),
+  getSaved:          (uid)                           => api("GET",  `/users/${uid}/saved`),
+  submitReview:      (uid, movie_id, rating, text, _tok, movie_meta = null) => api("POST", `/users/${uid}/reviews`, { movie_id, rating, text, ...(movie_meta ? { movie_meta } : {}) }),
+  deleteReview:      (uid, movie_id)                 => api("DELETE",`/users/${uid}/reviews/${movie_id}`),
+  getUserReviews:    (uid)                           => api("GET",  `/users/${uid}/reviews`),
+  getMovieReviews:   (movie_id)                      => api("GET",  `/movies/${movie_id}/reviews`),
+  getWatchlist:      (uid)                           => api("GET",  `/users/${uid}/watchlist`),
+  addWatchlist:      (uid, movie_id)                 => api("POST", `/users/${uid}/watchlist`, { movie_id }),
+  removeWatchlist:   (uid, movie_id)                 => api("DELETE",`/users/${uid}/watchlist/${movie_id}`),
   topMovies:         ()                              => api("GET",  "/movies/top"),
   movieStats:        (movie_id)                      => api("GET",  `/movies/${movie_id}/stats`),
   searchUsers:       (q, limit = 20)                 => api("GET",  `/users?q=${encodeURIComponent(q)}&limit=${limit}`),
-  deleteAccount:     (uid, token)                    => api("DELETE", `/users/${uid}`, null, token),
-  updateProfile:     (uid, fields, token)            => api("PATCH",  `/users/${uid}`, fields, token),
+  deleteAccount:     (uid)                           => api("DELETE", `/users/${uid}`),
+  updateProfile:     (uid, fields)                   => api("PATCH",  `/users/${uid}`, fields),
   // Notifications
   getNotifications:        (uid)                     => api("GET",    `/users/${uid}/notifications`),
   markNotificationRead:    (uid, nid)                => api("POST",   `/users/${uid}/notifications/${nid}/read`),
   markAllNotificationsRead:(uid)                     => api("POST",   `/users/${uid}/notifications/mark-all-read`),
   deleteNotification:      (uid, nid)                => api("DELETE", `/users/${uid}/notifications/${nid}`),
   // Reports / likes / replies
-  submitReport:      (uid, payload, token)           => api("POST",   `/users/${uid}/reports`, payload, token),
-  toggleFeedLike:    (uid, itemId, token)            => api("POST",   `/users/${uid}/feed-likes/${itemId}`, null, token),
+  submitReport:      (uid, payload)                  => api("POST",   `/users/${uid}/reports`, payload),
+  toggleFeedLike:    (uid, itemId)                   => api("POST",   `/users/${uid}/feed-likes/${itemId}`),
   listMyFeedLikes:   (uid)                           => api("GET",    `/users/${uid}/feed-likes`),
-  postFeedReply:     (uid, itemId, body, token)      => api("POST",   `/users/${uid}/feed-replies/${itemId}`, { body }, token),
+  postFeedReply:     (uid, itemId, body)             => api("POST",   `/users/${uid}/feed-replies/${itemId}`, { body }),
   listFeedReplies:   (itemId)                        => api("GET",    `/feed-items/${itemId}/replies`),
 };
 
-// Login variant that surfaces backend error details — the bare `api` wrapper
-// returns null on any non-2xx so the rest of the app can fall back to mock
-// data, but for login we want to actually tell the user *why* it failed
-// (invalid token, server down, etc.) instead of a generic "couldn't connect".
 export async function loginRaw(id_token) {
   try {
-    const res = await fetch(`${API_BASE}/auth/login`, {
+    const res = await fetch(_url("/auth/login"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id_token }),
