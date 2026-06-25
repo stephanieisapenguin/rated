@@ -21,7 +21,7 @@ import { findMovieSync } from "./lib/tmdb";
 import { computeStreak } from "./lib/streak";
 import { FOLLOW_LIMIT_PER_HOUR, FOLLOW_WINDOW_MS } from "./lib/moderation";
 import { TAKEN_USERNAMES } from "./lib/usernames";
-import { API, loginRaw } from "./lib/api";
+import { API, API_BASE, loginRaw } from "./lib/api";
 import { googleClientConfigured, promptGoogleSignIn } from "./lib/googleSignin";
 
 // Persisted session lives in this localStorage key. Wiped on logout. Includes
@@ -317,6 +317,18 @@ function AppInner() {
   },[]);
   // Clean up pending toast timeout on unmount
   useEffect(()=>()=>{if(toastTimeoutRef.current)clearTimeout(toastTimeoutRef.current);},[]);
+
+  // Cold-start detection — Render free tier spins down after inactivity.
+  // Show a warming banner if /health hasn't responded within 2s.
+  const [serverWarming,setServerWarming]=useState(false);
+  useEffect(()=>{
+    let cancelled=false;
+    const timer=setTimeout(()=>{ if(!cancelled) setServerWarming(true); },2000);
+    fetch(`${API_BASE}/health`)
+      .then(()=>{ clearTimeout(timer); if(!cancelled) setServerWarming(false); })
+      .catch(()=>{ clearTimeout(timer); if(!cancelled) setServerWarming(false); });
+    return ()=>{ cancelled=true; clearTimeout(timer); };
+  },[]);
   const [screen,setScreen]=useState("home");
   // First-run tutorial — show OnboardingRank after username claim until the
   // user ranks 5 films or skips. Persists in localStorage so a refresh
@@ -1043,6 +1055,9 @@ function AppInner() {
             <div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column",position:"relative",zoom:fontScale}}>
               {!online&&<div style={{background:W.dim,color:"#fff",padding:"4px 12px",fontSize:9,fontWeight:700,fontFamily:"monospace",textAlign:"center",flexShrink:0,letterSpacing:1}}>
                 ⚠ OFFLINE · Changes won't sync until you reconnect
+              </div>}
+              {serverWarming&&<div style={{background:"#1a1a2e",color:W.dim,padding:"4px 12px",fontSize:9,fontWeight:700,fontFamily:"monospace",textAlign:"center",flexShrink:0,letterSpacing:1}}>
+                ⏳ Server warming up · first load may be slow
               </div>}
               {content()}
               {toast&&<div role="status" aria-live="polite" aria-atomic="true" style={{position:"absolute",bottom:80,left:16,right:16,zIndex:100,background:toast.tone==="err"?W.accent:(themeMode==="light"?"#18181e":"#000"),border:`1px solid ${toast.tone==="err"?W.accent:W.border}`,borderRadius:12,padding:"10px 14px",boxShadow:"0 6px 24px rgba(0,0,0,0.6)"}}>
