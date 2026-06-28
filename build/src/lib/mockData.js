@@ -158,12 +158,3 @@ export const USER_PROFILES = {
   "@carlos":      { username: "carlos",      avatar: "C", movies_rated: 41,  streak: 1,  badge: "",   bio: "New here, loving it.",               followers: 9,    following: 22,  isPrivate: false },
 };
 
-export const MOCK_NOTIFICATIONS = [
-  {id:"n-001",type:"follow",     read:false,time:"2m ago",  user:"@cinephile99",avatar:"C", text:"started following you"},
-  {id:"n-002",type:"follow_req", read:false,time:"14m ago", user:"@filmfreak",  avatar:"F", text:"requested to follow you"},
-  {id:"n-003",type:"watchlist",  read:false,time:"1h ago",  movie:"Sinners",    icon:"🎬",  text:"is releasing in 7 days · Add to your watchlist"},
-  {id:"n-004",type:"follow",     read:true, time:"3h ago",  user:"@maya",       avatar:"M", text:"started following you"},
-  {id:"n-005",type:"watchlist",  read:true, time:"1d ago",  movie:"Mission: Impossible 8", icon:"🎬", text:"is releasing in 42 days"},
-  {id:"n-006",type:"follow_req", read:true, time:"2d ago",  user:"@josh",       avatar:"J", text:"requested to follow you"},
-  {id:"n-007",type:"follow",     read:true, time:"3d ago",  user:"@carlos",     avatar:"C", text:"started following you"},
-];
