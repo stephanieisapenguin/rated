@@ -7,8 +7,7 @@ import { useConfirm } from "../components/useConfirm";
 import { API } from "../lib/api";
 import { haptic } from "../lib/haptic";
 import { usePullToRefresh } from "../lib/hooks";
-import { MOCK_NOTIFICATIONS } from "../lib/mockData";
-import { formatRelativeTime, parseRelativeToTs } from "../lib/time";
+import { formatRelativeTime } from "../lib/time";
 import { W } from "../theme";
 
 // Map a backend notification row to the shape this screen renders.
@@ -42,12 +41,10 @@ export const NotificationsScreen = ({
   blockedUsers = new Set(), toggleFollowHandle, followingHandles = new Set(),
   approveFollower, onSelectUser, rateLimitedFollow,
 }) => {
-  const [notifications, setNotifications] = useState(() => MOCK_NOTIFICATIONS.map((n) => ({ ...n, ts: parseRelativeToTs(n.time) })));
+  const [notifications, setNotifications] = useState([]);
   const [tab, setTab] = useState("all");
   const { confirm, ConfirmDialog } = useConfirm();
 
-  // Fetch from backend on mount + on every pull-to-refresh. Falls back to
-  // the mock seed if the API is unreachable so the screen still demos.
   const fetchFromBackend = async () => {
     if (!userId) return;
     const res = await API.getNotifications(userId);

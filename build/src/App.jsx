@@ -286,7 +286,7 @@ function AppInner() {
   const [userBio,setUserBio]=useState("");
   const [profilePic,setProfilePic]=useState(null); // base64 data URL
   const [isPrivate,setIsPrivate]=useState(false);
-  const [unreadCount,setUnreadCount]=useState(3);
+  const [unreadCount,setUnreadCount]=useState(0);
   // Theme: "dark" | "light" | "system" (follows OS)
   const [themeMode,setThemeModeState]=useState("dark");
   // Dynamic type scale: 0.9 | 1.0 | 1.15 | 1.3
