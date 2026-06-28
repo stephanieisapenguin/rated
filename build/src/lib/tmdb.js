@@ -8,9 +8,6 @@
 import { API_BASE } from "./api";
 import { MOVIES, TMDB } from "./mockData";
 
-// Optimistic — assume backend has TMDB_API_KEY set. If it doesn't, calls
-// silently return null and the app falls back to hardcoded movies/upcoming.
-export const TMDB_ENABLED = true;
 
 const TMDB_CACHE = new Map(); // key -> {data, expiresAt}
 const TMDB_LIST_TTL = 10 * 60 * 1000;
@@ -65,13 +62,9 @@ export const TMDB_GENRES = {
   9648: "Mystery", 10749: "Romance", 878: "Science Fiction",
   10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western",
 };
-export async function getTmdbGenres() {
-  return TMDB_GENRES;
-}
-
 // Normalize a TMDB movie to the app's internal movie schema.
 // Works for both list results (minimal fields) and detail results (full).
-export function mapTmdbMovie(t, genreMap = TMDB_GENRES || {}) {
+function mapTmdbMovie(t, genreMap = TMDB_GENRES) {
   if (!t) return null;
   const year = t.release_date ? parseInt(t.release_date.slice(0, 4), 10) : null;
   const genres = (t.genres || (t.genre_ids || []).map(id => ({ id, name: genreMap[id] || "" }))).filter(g => g.name);
@@ -122,7 +115,7 @@ export function mapTmdbMovie(t, genreMap = TMDB_GENRES || {}) {
 
 // Public TMDB list helpers — each returns mapped movie arrays or null on failure.
 export async function tmdbPopular() {
-  const genreMap = await getTmdbGenres();
+  const genreMap = TMDB_GENRES;
   const data = await tmdbFetch("/movie/popular?language=en-US&page=1");
   if (!data?.results) return null;
   const mapped = data.results.map((r, i) => {
@@ -134,7 +127,7 @@ export async function tmdbPopular() {
   return mapped;
 }
 export async function tmdbUpcoming() {
-  const genreMap = await getTmdbGenres();
+  const genreMap = TMDB_GENRES;
   const data = await tmdbFetch("/movie/upcoming?language=en-US&page=1");
   if (!data?.results) return null;
   // TMDB sometimes includes already-released entries; filter by today.
@@ -148,7 +141,7 @@ export async function tmdbUpcoming() {
   return mapped;
 }
 export async function tmdbTopRated() {
-  const genreMap = await getTmdbGenres();
+  const genreMap = TMDB_GENRES;
   const data = await tmdbFetch("/movie/top_rated?language=en-US&page=1");
   if (!data?.results) return null;
   const mapped = data.results.map((r, i) => {
@@ -161,7 +154,7 @@ export async function tmdbTopRated() {
 }
 export async function tmdbSearch(query) {
   if (!query || query.length < 2) return null;
-  const genreMap = await getTmdbGenres();
+  const genreMap = TMDB_GENRES;
   const data = await tmdbFetch(`/search/movie?query=${encodeURIComponent(query)}&language=en-US&page=1&include_adult=false`);
   if (!data?.results) return null;
   const mapped = data.results.map(r => mapTmdbMovie(r, genreMap)).filter(Boolean);
@@ -171,7 +164,7 @@ export async function tmdbSearch(query) {
 // Fetch full movie detail (cast, trailers, etc). Cached indefinitely.
 export async function tmdbMovieDetail(tmdbId) {
   if (!tmdbId) return null;
-  const genreMap = await getTmdbGenres();
+  const genreMap = TMDB_GENRES;
   const data = await tmdbFetch(`/movie/${tmdbId}?append_to_response=credits,videos&language=en-US`, { ttl: 0 });
   if (!data) return null;
   return mapTmdbMovie(data, genreMap);
@@ -188,7 +181,7 @@ const TMDB_MOVIE_INDEX = new Map();
 
 // Register mapped TMDB movies as they flow through the app so findMovieSync
 // can find them later. Call sites: list results from tmdbPopular/Upcoming/Search/TopRated.
-export function indexTmdbMovies(movies) {
+function indexTmdbMovies(movies) {
   if (!movies) return;
   for (const m of movies) {
     if (m?.id && m.tmdb_id) TMDB_MOVIE_INDEX.set(m.id, m);
@@ -224,18 +217,3 @@ export function findMovieSync(id, title) {
   };
 }
 
-// Async lookup with TMDB hydration. Returns the fullest possible movie record.
-export async function findMovieAsync(id, title) {
-  const base = findMovieSync(id, title);
-  if (!base) return null;
-  if (base.poster_url && base.genres?.length > 0 && base.cast?.length > 0) return base;
-  if (base.tmdb_id && TMDB_ENABLED) {
-    const full = await tmdbMovieDetail(base.tmdb_id);
-    if (full) {
-      const merged = { ...base, ...full, id: base.id };
-      TMDB_MOVIE_INDEX.set(merged.id, merged);
-      return merged;
-    }
-  }
-  return base;
-}

@@ -5,7 +5,7 @@
 
 // Date at 00:00:00 on the Monday of the week containing `ts`. Monday is ISO
 // weekday 1 (JS getDay: Sun=0, Mon=1, ..., Sat=6).
-export const getMondayOfWeek = (ts) => {
+const getMondayOfWeek = (ts) => {
   const d = new Date(ts);
   d.setHours(0, 0, 0, 0);
   const dayOfWeek = d.getDay();

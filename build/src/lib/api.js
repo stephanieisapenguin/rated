@@ -56,7 +56,6 @@ export const API = {
   addWatchlist:      (uid, movie_id, token)                              => api("POST", `/users/${uid}/watchlist`, { movie_id }, token),
   removeWatchlist:   (uid, movie_id, token)                              => api("DELETE",`/users/${uid}/watchlist/${movie_id}`, null, token),
   topMovies:         ()                                                  => api("GET",  "/movies/top"),
-  movieStats:        (movie_id)                                          => api("GET",  `/movies/${movie_id}/stats`),
   searchUsers:       (q, limit = 20)                                     => api("GET",  `/users?q=${encodeURIComponent(q)}&limit=${limit}`),
   deleteAccount:     (uid, token)                                        => api("DELETE", `/users/${uid}`, null, token),
   updateProfile:     (uid, fields, token)                                => api("PATCH",  `/users/${uid}`, fields, token),

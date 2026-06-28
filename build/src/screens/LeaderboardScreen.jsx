@@ -5,7 +5,7 @@ import { PullIndicator } from "../components/PullIndicator";
 import { ScreenWithNav } from "../components/ScreenWithNav";
 import { usePullToRefresh } from "../lib/hooks";
 import { MOVIES, USER_PROFILES } from "../lib/mockData";
-import { TMDB_ENABLED, tmdbTopRated } from "../lib/tmdb";
+import { tmdbTopRated } from "../lib/tmdb";
 import { W } from "../theme";
 
 export const LeaderboardScreen = ({
@@ -68,7 +68,7 @@ export const LeaderboardScreen = ({
         {[
           { key: "global", label: "Most Rated" },
           { key: "friends", label: "Friends' Picks" },
-          ...(TMDB_ENABLED ? [{ key: "toprated", label: "Top Rated" }] : []),
+          { key: "toprated", label: "Top Rated" },
         ].map((t) => (
           <div key={t.key} onClick={() => setTab(t.key)} style={{ flex: 1, textAlign: "center", padding: "8px 0", fontSize: 10, fontFamily: "monospace", fontWeight: 600, color: tab === t.key ? W.accent : W.dim, borderBottom: `2px solid ${tab === t.key ? W.accent : "transparent"}`, cursor: "pointer" }}>{t.label}</div>
         ))}
