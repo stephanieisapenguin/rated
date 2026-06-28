@@ -37,7 +37,7 @@ const AUTH_STORAGE_KEY = "rated:auth";
 
 // API client + base URL live in ./lib/api — see imports at top of file.
 
-// MOVIES / UPCOMING / ALL_GENRES / MOCK_FEED / MOCK_FRIENDS live in ./lib/mockData.
+// MOVIES / UPCOMING / ALL_GENRES / MOCK_FRIENDS live in ./lib/mockData.
 // TMDB helpers and findMovieSync/Async live in ./lib/tmdb.
 // Time helpers (formatRelativeTime, parseRelativeToTs, daysUntil) live in
 // ./lib/time. Reusable hooks (useOnlineStatus, useMinuteTick, etc.) live in

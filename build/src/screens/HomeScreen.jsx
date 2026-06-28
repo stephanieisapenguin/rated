@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { ImageViewer } from "../components/ImageViewer";
 import { Poster } from "../components/Poster";
@@ -12,8 +12,8 @@ import { TapTarget } from "../components/TapTarget";
 import { API } from "../lib/api";
 import { haptic } from "../lib/haptic";
 import { usePullToRefresh } from "../lib/hooks";
-import { GLOBAL_FEED, MOCK_FEED, MOCK_FRIENDS, MOVIES } from "../lib/mockData";
-import { formatRelativeTime, parseRelativeToTs } from "../lib/time";
+import { MOVIES } from "../lib/mockData";
+import { formatRelativeTime } from "../lib/time";
 import { findMovieSync, tmdbPopular } from "../lib/tmdb";
 import { W } from "../theme";
 
@@ -29,10 +29,8 @@ export const HomeScreen = ({
   showToast,
 }) => {
   const [loaded, setLoaded] = useState(false);
-  // Hydrate feed items with real timestamps so formatRelativeTime ticks live.
-  const [feedItems, setFeedItems] = useState(() => MOCK_FEED.map((i) => ({ ...i, ts: parseRelativeToTs(i.time) })));
+  const [feedItems, setFeedItems] = useState([]);
   const [feedTab, setFeedTab] = useState("following");
-  const hydratedGlobalFeed = useRef(GLOBAL_FEED.map((i) => ({ ...i, ts: parseRelativeToTs(i.time) }))).current;
   const likes = feedLikes;
   const saved = savedMovies;
   const [replyOpen, setReplyOpen] = useState(null);
@@ -42,25 +40,11 @@ export const HomeScreen = ({
   const [visibleCount, setVisibleCount] = useState(10);
   // Everyone tab collapses long reply threads by default.
   const [expandedReplies, setExpandedReplies] = useState(new Set());
-  // Public replies — seed with sample threads keyed by feed item id.
-  const [replies, setReplies] = useState(() => ({
-    "f-001": [
-      { user: "@maya", avatar: "M", text: "Whiplash is an all-timer for me too", time: "3m ago",  ts: parseRelativeToTs("3m") },
-      { user: "@josh", avatar: "J", text: "Better than Birdman? Bold take 🔥",   time: "12m ago", ts: parseRelativeToTs("12m") },
-    ],
-    "g-001": [
-      { user: "@reeltalks", avatar: "R", text: "Parasite deserves every 10/10 it gets", time: "8m ago", ts: parseRelativeToTs("8m") },
-    ],
-    "g-004": [
-      { user: "@maya",     avatar: "M", text: "Rajamouli is a master, fully agree",            time: "3h ago",  ts: parseRelativeToTs("3h") },
-      { user: "@carlos",   avatar: "C", text: "Need to rewatch this one",                      time: "2h ago",  ts: parseRelativeToTs("2h") },
-      { user: "@filmfreak", avatar: "F", text: "That dance sequence lives in my head rent free", time: "45m ago", ts: parseRelativeToTs("45m") },
-    ],
-  }));
+  const [replies, setReplies] = useState({});
 
   const rawFeed = feedTab === "following"
     ? [...userFeedItems, ...feedItems.filter((item) => followingHandles.has(item.user))]
-    : [...userFeedItems, ...hydratedGlobalFeed];
+    : [...userFeedItems, ...feedItems];
   const activeFeed = rawFeed.filter((item) => !blockedUsers.has(item.user));
 
   const [loadError, setLoadError] = useState(null);
@@ -77,7 +61,7 @@ export const HomeScreen = ({
       setLoadError(null);
       try {
         if (userId && session) {
-          const apiFeed = await API.getFeed(userId, session);
+          const apiFeed = await API.getFeed(userId);
           if (apiFeed && apiFeed.length > 0) {
             setFeedItems(apiFeed.map((r) => {
               // Backend returns ranked_at as Unix seconds; frontend uses ms.
@@ -113,15 +97,6 @@ export const HomeScreen = ({
   const handleRetry = () => { setLoaded(false); setLoadError(null); setRetryCount((c) => c + 1); };
 
   const toggleSave = (id) => toggleSavedMovie && toggleSavedMovie(id);
-  const toggleFollow = async (friend) => {
-    const handle = `@${friend.username}`;
-    const isFollowingNow = followingHandles.has(handle);
-    // toggleFollowHandle handles both local state and the backend write
-    // (optimistic + rollback). Skip the rate limiter for unfollows; wrap follows.
-    if (isFollowingNow) { toggleFollowHandle && toggleFollowHandle(handle); return; }
-    if (rateLimitedFollow) rateLimitedFollow(() => toggleFollowHandle && toggleFollowHandle(handle));
-    else toggleFollowHandle && toggleFollowHandle(handle);
-  };
   const submitReply = (itemId) => {
     const trimmed = replyText.trim();
     if (!trimmed) return;
@@ -149,7 +124,7 @@ export const HomeScreen = ({
     let cancelled = false;
     const idsToFetch = (feedTab === "following"
       ? userFeedItems.map((i) => i.id)
-      : [...userFeedItems.map((i) => i.id), ...hydratedGlobalFeed.map((i) => i.id)]
+      : [...userFeedItems.map((i) => i.id), ...feedItems.map((i) => i.id)]
     ).slice(0, visibleCount);
     if (idsToFetch.length === 0) return;
     Promise.all(idsToFetch.map((id) => API.listFeedReplies(id).then((res) => ({ id, replies: res?.replies || [] })))).then((results) => {
@@ -264,7 +239,6 @@ export const HomeScreen = ({
         {activeFeed.slice(0, visibleCount).map((item) => {
           const isLiked = likes[item.id] ?? item.liked;
           const likeCount = (item.likes || 0) + (likes[item.id] && !item.liked ? 1 : 0) - (!likes[item.id] && item.liked ? 1 : 0);
-          const friend = MOCK_FRIENDS.find((u) => `@${u.username}` === item.user);
           const isFollowing = followingHandles.has(item.user);
           const itemReplies = replies[item.id] || [];
           const isOwnUser = item.user === "@you" || item.user === `@${username}`;
@@ -302,9 +276,7 @@ export const HomeScreen = ({
                 {feedTab === "everyone" && !isOwnUser && (() => {
                   const handleFollowToggle = (e) => {
                     e.stopPropagation();
-                    if (friend) {
-                      toggleFollow(friend);
-                    } else if (isFollowing) {
+                    if (isFollowing) {
                       toggleFollowHandle && toggleFollowHandle(item.user);
                     } else if (rateLimitedFollow) {
                       rateLimitedFollow(() => toggleFollowHandle && toggleFollowHandle(item.user));

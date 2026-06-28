@@ -4,8 +4,7 @@
 // MOVIES — base catalog used by findMovieSync and as a fallback poster set.
 // UPCOMING — fallback for the Upcoming screen.
 // ALL_GENRES — left-aligned filter chip list on Upcoming and elsewhere.
-// MOCK_FEED / MOCK_FRIENDS / MOCK_NOTIFICATIONS — seed fixtures so the app
-// still feels alive when offline.
+// MOCK_FRIENDS — demo follow-graph; ProfileScreen/App still seed from this.
 
 export const TMDB = "https://image.tmdb.org/t/p";
 
@@ -116,32 +115,11 @@ export const UPCOMING = [
 
 export const ALL_GENRES = ["All","Horror","Action","Drama","Comedy","Sci-Fi","Thriller"];
 
-export const MOCK_FEED = [
-  {id:"f-001",type:"rating",user:"@maya",avatar:"M",action:"rated",movie_title:"Interstellar",movie_id:"m-001",rating:9.5,time:"2m",likes:12,liked:false},
-  {id:"f-002",type:"review",user:"@josh",avatar:"J",action:"reviewed",movie_title:"Parasite",movie_id:"m-002",preview:"Bong Joon-ho crafted something that transcends genre. The tonal shifts are masterful...",rating:9.0,time:"18m",likes:34,liked:false},
-  {id:"f-003",type:"ranking",user:"@lina",avatar:"L",action:"ranked",movie_title:"The Dark Knight",movie_id:"m-003",rating:10,preview:"New #1 · dethroned Interstellar",rank_position:1,time:"1h",likes:8,liked:false},
-  {id:"f-004",type:"save",user:"@carlos",avatar:"C",action:"saved",movie_title:"RRR",movie_id:"m-005",time:"2h",likes:3,liked:false},
-  {id:"f-005",type:"streak",user:"@maya",avatar:"M",action:"hit a 12-week streak 🔥",time:"3h",likes:45,liked:false},
-  {id:"f-006",type:"rating",user:"@filmfreak",avatar:"F",action:"rated",movie_title:"The Dark Knight",movie_id:"m-003",rating:10,time:"5h",likes:9,liked:false},
-  {id:"f-007",type:"rating",user:"@cinephile99",avatar:"C",action:"rated",movie_title:"Whiplash",movie_id:"m-004",rating:9,time:"6h",likes:15,liked:false},
-  {id:"f-008",type:"review",user:"@reeltalks",avatar:"R",action:"reviewed",movie_title:"Interstellar",movie_id:"m-001",preview:"Nolan's time-dilation sequence still wrecks me...",rating:9.5,time:"8h",likes:22,liked:false},
-];
-
 export const MOCK_FRIENDS = [
   {id:"u-maya",username:"maya",avatar:"M",is_following:false,follows_me:true},
   {id:"u-josh",username:"josh",avatar:"J",is_following:true,follows_me:true},
   {id:"u-lina",username:"lina",avatar:"L",is_following:false,follows_me:false},
   {id:"u-carlos",username:"carlos",avatar:"C",is_following:true,follows_me:false},
-];
-
-// Activity feed in the global discover tab on Home. Real users would replace
-// this once the friends-feed is the primary source.
-export const GLOBAL_FEED = [
-  { id:"g-001", type:"rating",  user:"@cinephile99", avatar:"C", action:"rated",    movie_title:"Parasite",        movie_id:"m-002", rating:10,                                      time:"5m",  likes:34, liked:false },
-  { id:"g-002", type:"ranking", user:"@reeltalks",   avatar:"R", action:"ranked",   movie_title:"Whiplash",        movie_id:"m-004", rating:10, preview:"New #1 · dethroned Interstellar", rank_position:1, time:"22m", likes:18, liked:false },
-  { id:"g-003", type:"rating",  user:"@filmfreak",   avatar:"F", action:"rated",    movie_title:"The Dark Knight", movie_id:"m-003", rating:10,                                      time:"1h",  likes:9,  liked:false },
-  { id:"g-004", type:"review",  user:"@lina",        avatar:"L", action:"reviewed", movie_title:"RRR",             movie_id:"m-005", rating:9,  preview:"S.S. Rajamouli delivers pure spectacle unlike anything Hollywood would greenlight...", time:"2h", likes:27, liked:false },
-  { id:"g-005", type:"streak",  user:"@cinephile99", avatar:"C", action:"hit a 34-week streak 💎",                                                                                  time:"4h",  likes:89, liked:false },
 ];
 
 // Mock user-profile records keyed by handle. Used by UserProfileScreen and by
