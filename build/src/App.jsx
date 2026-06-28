@@ -31,8 +31,7 @@ import { googleClientConfigured, promptGoogleSignIn } from "./lib/googleSignin";
 const AUTH_STORAGE_KEY = "rated:auth";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// API LAYER
-// Set API_BASE to your running FastAPI server.
+// API LAYER — base URL + auth from VITE_API_BASE_URL / VITE_API_AUTH env vars.
 // Falls back to mock data automatically when the server is unreachable.
 // ─────────────────────────────────────────────────────────────────────────────
 
