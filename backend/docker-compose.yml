@@ -1,0 +1,17 @@
+version: "3.9"
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    # Scale horizontally: docker compose up --scale api=3
+    # (requires a load balancer in front and Redis for shared state)
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
